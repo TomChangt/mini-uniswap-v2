@@ -43,6 +43,11 @@ const LiquidityInterface: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [pairAddress, setPairAddress] = useState<string>("");
 
+  // 代币显示名称转换函数
+  const getDisplayName = (tokenName: "A" | "B") => {
+    return tokenName === "A" ? "USDT" : "ETH";
+  };
+
   // 创建可复用的数据刷新函数
   const refreshData = useCallback(async () => {
     if (!account || !tokenAContract || !tokenBContract || !factoryContract)
@@ -208,8 +213,10 @@ const LiquidityInterface: React.FC = () => {
       !account ||
       !amountA ||
       !amountB
-    )
+    ) {
+      showError("参数错误", "请确保所有必要的参数都已提供");
       return;
+    }
 
     setLoading(true);
     try {
@@ -219,19 +226,112 @@ const LiquidityInterface: React.FC = () => {
       const amountBMin = (amountBDesired * BigInt(95)) / BigInt(100);
       const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟
 
+      // 前置检查
+      showInfo("正在执行前置检查 🔍", "检查余额和流动性池状态...");
+
+      // 检查用户余额
+      const [balanceA, balanceB] = await Promise.all([
+        tokenAContract.balanceOf(account),
+        tokenBContract.balanceOf(account),
+      ]);
+
+      if (balanceA < amountADesired) {
+        throw new Error(
+          `USDT 余额不足，当前余额: ${ethers.formatEther(
+            balanceA
+          )} USDT，需要: ${amountA} USDT`
+        );
+      }
+
+      if (balanceB < amountBDesired) {
+        throw new Error(
+          `ETH 余额不足，当前余额: ${ethers.formatEther(
+            balanceB
+          )} ETH，需要: ${amountB} ETH`
+        );
+      }
+
+      // 检查池子状态和比例
+      const pair = await factoryContract?.getPair(
+        addresses.tokenA,
+        addresses.tokenB
+      );
+      let isFirstLiquidity = false;
+
+      if (pair && pair !== ethers.ZeroAddress) {
+        // 池子已存在，检查比例
+        const pairContract = new ethers.Contract(
+          pair,
+          [
+            "function getReserves() view returns (uint112, uint112, uint32)",
+            "function token0() view returns (address)",
+          ],
+          tokenAContract.runner
+        );
+
+        try {
+          const [reservesData, token0] = await Promise.all([
+            pairContract.getReserves(),
+            pairContract.token0(),
+          ]);
+
+          if (reservesData[0] > 0 || reservesData[1] > 0) {
+            // 确定 TokenA 和 TokenB 的储备量
+            const isTokenAFirst =
+              token0.toLowerCase() === addresses.tokenA.toLowerCase();
+            const reserveA = isTokenAFirst ? reservesData[0] : reservesData[1];
+            const reserveB = isTokenAFirst ? reservesData[1] : reservesData[0];
+
+            // 计算期望的比例
+            const currentRatio = Number(reserveB) / Number(reserveA);
+            const inputRatio = parseFloat(amountB) / parseFloat(amountA);
+            const ratioDiff =
+              Math.abs(currentRatio - inputRatio) / currentRatio;
+
+            // 如果比例偏差超过10%，给出警告
+            if (ratioDiff > 0.1) {
+              const expectedAmountB = (
+                parseFloat(amountA) * currentRatio
+              ).toFixed(6);
+              const expectedAmountA = (
+                parseFloat(amountB) / currentRatio
+              ).toFixed(6);
+
+              showInfo(
+                "比例提醒 ⚖️",
+                `当前池比例: 1 USDT = ${currentRatio.toFixed(
+                  6
+                )} ETH。建议调整数量以匹配比例，或者使用 ${expectedAmountA} USDT 和 ${amountB} ETH，或者使用 ${amountA} USDT 和 ${expectedAmountB} ETH`
+              );
+            }
+          } else {
+            isFirstLiquidity = true;
+          }
+        } catch (error) {
+          console.warn("无法获取储备量，可能是首次添加流动性");
+          isFirstLiquidity = true;
+        }
+      } else {
+        isFirstLiquidity = true;
+        showInfo("创建新的交易对 🆕", "这是该交易对的首次流动性添加");
+      }
+
+      showInfo("正在检查授权 🔍", "检查代币授权状态...");
+
       // 检查并授权 TokenA
       const allowanceA = await tokenAContract.allowance(
         account,
         addresses.router
       );
       if (allowanceA < amountADesired) {
-        showInfo("正在授权 TokenA 📝", "请确认 TokenA 授权交易...");
+        showInfo("正在授权 USDT 📝", "请在钱包中确认 USDT 授权交易...");
         const approveTxA = await tokenAContract.approve(
           addresses.router,
           ethers.MaxUint256
         );
+        showInfo("等待授权确认 ⏳", "USDT 授权交易已提交，等待确认...");
         await approveTxA.wait();
-        showSuccess("TokenA 授权成功 ✅", "TokenA 授权已完成");
+        showSuccess("USDT 授权成功 ✅", "USDT 授权已完成");
       }
 
       // 检查并授权 TokenB
@@ -240,16 +340,18 @@ const LiquidityInterface: React.FC = () => {
         addresses.router
       );
       if (allowanceB < amountBDesired) {
-        showInfo("正在授权 TokenB 📝", "请确认 TokenB 授权交易...");
+        showInfo("正在授权 ETH 📝", "请在钱包中确认 ETH 授权交易...");
         const approveTxB = await tokenBContract.approve(
           addresses.router,
           ethers.MaxUint256
         );
+        showInfo("等待授权确认 ⏳", "ETH 授权交易已提交，等待确认...");
         await approveTxB.wait();
-        showSuccess("TokenB 授权成功 ✅", "TokenB 授权已完成");
+        showSuccess("ETH 授权成功 ✅", "ETH 授权已完成");
       }
 
       // 添加流动性
+      showInfo("正在添加流动性 💧", "请在钱包中确认添加流动性交易...");
       const addLiquidityTx = await routerContract.addLiquidity(
         addresses.tokenA,
         addresses.tokenB,
@@ -261,6 +363,7 @@ const LiquidityInterface: React.FC = () => {
         deadline
       );
 
+      showInfo("等待交易确认 ⏳", "添加流动性交易已提交，等待确认...");
       const receipt = await addLiquidityTx.wait();
       console.log("添加流动性成功! 交易哈希:", receipt?.hash);
 
@@ -276,14 +379,41 @@ const LiquidityInterface: React.FC = () => {
 
       showSuccess(
         "添加流动性成功! 🎉",
-        `成功添加 ${amountA} TokenA 和 ${amountB} TokenB 到流动性池`
+        `成功添加 ${amountA} ${getDisplayName(
+          "A"
+        )} 和 ${amountB} ${getDisplayName("B")} 到流动性池${
+          isFirstLiquidity ? "（首次流动性）" : ""
+        }`
       );
     } catch (error: any) {
       console.error("添加流动性失败:", error);
-      showError(
-        "添加流动性失败 😞",
-        `操作失败: ${error.message || "未知错误，请重试"}`
-      );
+
+      // 更详细的错误处理
+      let errorMessage = "未知错误，请重试";
+      if (error.code === 4001) {
+        errorMessage = "用户取消了交易";
+      } else if (error.message.includes("INSUFFICIENT_A_AMOUNT")) {
+        errorMessage =
+          "USDT 数量不足，当前价格下实际需要的 USDT 数量低于您设置的最小值";
+      } else if (error.message.includes("INSUFFICIENT_B_AMOUNT")) {
+        errorMessage =
+          "ETH 数量不足，当前价格下实际需要的 ETH 数量低于您设置的最小值";
+      } else if (error.message.includes("TRANSFER_FROM_FAILED")) {
+        errorMessage = "代币转账失败，请检查授权是否成功";
+      } else if (error.message.includes("余额不足")) {
+        errorMessage = error.message;
+      } else if (
+        error.message.includes("USDT 余额不足") ||
+        error.message.includes("ETH 余额不足")
+      ) {
+        errorMessage = error.message;
+      } else if (error.code === -32603) {
+        errorMessage = "交易执行失败，可能是余额不足、授权问题或网络问题";
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      showError("添加流动性失败 😞", `操作失败: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -295,8 +425,10 @@ const LiquidityInterface: React.FC = () => {
       !account ||
       !lpBalance ||
       parseFloat(lpBalance) === 0
-    )
+    ) {
+      showError("参数错误", "请确保有足够的LP代币可以移除");
       return;
+    }
 
     setLoading(true);
     try {
@@ -310,6 +442,7 @@ const LiquidityInterface: React.FC = () => {
       const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟
 
       // 授权LP代币
+      showInfo("正在授权LP代币 📝", "请在钱包中确认LP代币授权交易...");
       const pairContract = new ethers.Contract(
         pairAddress,
         ["function approve(address, uint256) returns (bool)"],
@@ -317,9 +450,12 @@ const LiquidityInterface: React.FC = () => {
       );
 
       const approveTx = await pairContract.approve(addresses.router, liquidity);
+      showInfo("等待授权确认 ⏳", "LP代币授权交易已提交，等待确认...");
       await approveTx.wait();
+      showSuccess("LP代币授权成功 ✅", "LP代币授权已完成");
 
       // 移除流动性
+      showInfo("正在移除流动性 🔥", "请在钱包中确认移除流动性交易...");
       const removeLiquidityTx = await routerContract.removeLiquidity(
         addresses.tokenA,
         addresses.tokenB,
@@ -330,6 +466,7 @@ const LiquidityInterface: React.FC = () => {
         deadline
       );
 
+      showInfo("等待交易确认 ⏳", "移除流动性交易已提交，等待确认...");
       const receipt = await removeLiquidityTx.wait();
       console.log("移除流动性成功! 交易哈希:", receipt?.hash);
 
@@ -343,14 +480,24 @@ const LiquidityInterface: React.FC = () => {
         "移除流动性成功! 🎉",
         `成功移除 ${removePercentage}% 的流动性，获得 ${parseFloat(
           removeAmountA
-        ).toFixed(4)} TokenA 和 ${parseFloat(removeAmountB).toFixed(4)} TokenB`
+        ).toFixed(4)} ${getDisplayName("A")} 和 ${parseFloat(
+          removeAmountB
+        ).toFixed(4)} ${getDisplayName("B")}`
       );
     } catch (error: any) {
       console.error("移除流动性失败:", error);
-      showError(
-        "移除流动性失败 😞",
-        `操作失败: ${error.message || "未知错误，请重试"}`
-      );
+
+      // 更详细的错误处理
+      let errorMessage = "未知错误，请重试";
+      if (error.code === 4001) {
+        errorMessage = "用户取消了交易";
+      } else if (error.code === -32603) {
+        errorMessage = "交易执行失败，可能是LP代币不足或网络问题";
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      showError("移除流动性失败 😞", `操作失败: ${errorMessage}`);
     } finally {
       setLoading(false);
     }
@@ -422,17 +569,19 @@ const LiquidityInterface: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <div className="text-blue-300 flex items-center">
-                    <span className="mr-2">💱</span>1 TKA ={" "}
+                    <span className="mr-2">💱</span>1 {getDisplayName("A")} ={" "}
                     {(
                       parseFloat(reserves.reserveB) /
                       parseFloat(reserves.reserveA)
                     ).toFixed(6)}{" "}
-                    TKB
+                    {getDisplayName("B")}
                   </div>
                   <div className="text-green-300 flex items-center">
                     <span className="mr-2">🏦</span>
-                    池中储备: {parseFloat(reserves.reserveA).toFixed(2)} TKA /{" "}
-                    {parseFloat(reserves.reserveB).toFixed(2)} TKB
+                    池中储备: {parseFloat(reserves.reserveA).toFixed(2)}{" "}
+                    {getDisplayName("A")} /{" "}
+                    {parseFloat(reserves.reserveB).toFixed(2)}{" "}
+                    {getDisplayName("B")}
                   </div>
                 </div>
               </div>
@@ -442,7 +591,7 @@ const LiquidityInterface: React.FC = () => {
           <div className="mb-4 glass-card p-4">
             <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
               <span className="mr-2">🔷</span>
-              TokenA 数量
+              {getDisplayName("A")} 数量
             </label>
             <input
               type="number"
@@ -456,7 +605,7 @@ const LiquidityInterface: React.FC = () => {
             />
             <div className="text-sm text-slate-300 mt-2 flex items-center">
               <span className="mr-1">💰</span>
-              余额: {parseFloat(tokenABalance).toFixed(4)} TKA
+              余额: {parseFloat(tokenABalance).toFixed(4)} {getDisplayName("A")}
             </div>
           </div>
 
@@ -464,7 +613,7 @@ const LiquidityInterface: React.FC = () => {
           <div className="mb-6 glass-card p-4">
             <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
               <span className="mr-2">🔶</span>
-              TokenB 数量
+              {getDisplayName("B")} 数量
             </label>
             <input
               type="number"
@@ -478,7 +627,7 @@ const LiquidityInterface: React.FC = () => {
             />
             <div className="text-sm text-slate-300 mt-2 flex items-center">
               <span className="mr-1">💰</span>
-              余额: {parseFloat(tokenBBalance).toFixed(4)} TKB
+              余额: {parseFloat(tokenBBalance).toFixed(4)} {getDisplayName("B")}
             </div>
           </div>
 
@@ -507,6 +656,19 @@ const LiquidityInterface: React.FC = () => {
               </div>
             )}
           </button>
+
+          {/* 取消按钮 - 仅在loading时显示 */}
+          {loading && (
+            <button
+              onClick={() => {
+                setLoading(false);
+                showInfo("操作已取消", "如果交易已提交到网络，它可能仍会执行");
+              }}
+              className="w-full mt-3 bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300"
+            >
+              取消操作
+            </button>
+          )}
         </div>
       )}
 
@@ -569,19 +731,21 @@ const LiquidityInterface: React.FC = () => {
                     <div className="flex justify-between items-center">
                       <span className="text-slate-300 flex items-center">
                         <span className="mr-2">🔷</span>
-                        TokenA:
+                        {getDisplayName("A")}:
                       </span>
                       <span className="text-blue-300 font-semibold">
-                        {parseFloat(removeAmountA).toFixed(6)} TKA
+                        {parseFloat(removeAmountA).toFixed(6)}{" "}
+                        {getDisplayName("A")}
                       </span>
                     </div>
                     <div className="flex justify-between items-center">
                       <span className="text-slate-300 flex items-center">
                         <span className="mr-2">🔶</span>
-                        TokenB:
+                        {getDisplayName("B")}:
                       </span>
                       <span className="text-orange-300 font-semibold">
-                        {parseFloat(removeAmountB).toFixed(6)} TKB
+                        {parseFloat(removeAmountB).toFixed(6)}{" "}
+                        {getDisplayName("B")}
                       </span>
                     </div>
                   </div>
@@ -608,6 +772,22 @@ const LiquidityInterface: React.FC = () => {
                     </div>
                   )}
                 </button>
+
+                {/* 取消按钮 - 仅在loading时显示 */}
+                {loading && (
+                  <button
+                    onClick={() => {
+                      setLoading(false);
+                      showInfo(
+                        "操作已取消",
+                        "如果交易已提交到网络，它可能仍会执行"
+                      );
+                    }}
+                    className="w-full mt-3 bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300"
+                  >
+                    取消操作
+                  </button>
+                )}
               </>
             ) : (
               <div className="text-center py-12">

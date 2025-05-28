@@ -1,14 +1,19 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useWeb3 } from "../contexts/Web3Context";
 import { useNotification } from "../contexts/NotificationContext";
 
 interface TokenBalanceProps {
   tokenName: "TokenA" | "TokenB";
+  displayName: string;
+  symbolName: string;
 }
 
-const TokenBalance: React.FC<TokenBalanceProps> = ({ tokenName }) => {
+const TokenBalance: React.FC<TokenBalanceProps> = ({
+  tokenName,
+  displayName,
+  symbolName,
+}) => {
   const {
-    account,
     tokenAContract,
     tokenBContract,
     isConnected,
@@ -17,29 +22,10 @@ const TokenBalance: React.FC<TokenBalanceProps> = ({ tokenName }) => {
     refreshTokenBalances,
   } = useWeb3();
   const { showSuccess, showError } = useNotification();
-  const [symbol, setSymbol] = useState<string>("");
   const [loading, setLoading] = useState(false);
 
   const contract = tokenName === "TokenA" ? tokenAContract : tokenBContract;
   const balance = tokenName === "TokenA" ? tokenABalance : tokenBBalance;
-
-  useEffect(() => {
-    const fetchTokenInfo = async () => {
-      if (!contract || !account || !isConnected) return;
-
-      setLoading(true);
-      try {
-        const symbol = await contract.symbol();
-        setSymbol(symbol);
-      } catch (error) {
-        console.error(`获取 ${tokenName} 信息失败:`, error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchTokenInfo();
-  }, [contract, account, isConnected, tokenName]);
 
   const handleFaucet = async () => {
     if (!contract) return;
@@ -57,7 +43,7 @@ const TokenBalance: React.FC<TokenBalanceProps> = ({ tokenName }) => {
 
       showSuccess(
         "水龙头成功! 🎉",
-        `成功获得 1000 ${symbol} 代币，已添加到您的钱包中`
+        `成功获得 1000 ${displayName} 代币，已添加到您的钱包中`
       );
     } catch (error: any) {
       console.error("水龙头失败:", error);
@@ -93,10 +79,12 @@ const TokenBalance: React.FC<TokenBalanceProps> = ({ tokenName }) => {
               {tokenName === "TokenA" ? "🔷" : "🔶"}
             </span>
           </div>
-          <h3 className="text-lg font-semibold text-slate-100">{tokenName}</h3>
+          <h3 className="text-lg font-semibold text-slate-100">
+            {displayName}
+          </h3>
         </div>
         <span className="text-sm text-slate-300 bg-white/15 px-2 py-1 rounded-full">
-          {symbol}
+          {symbolName}
         </span>
       </div>
 
@@ -109,7 +97,7 @@ const TokenBalance: React.FC<TokenBalanceProps> = ({ tokenName }) => {
               加载中...
             </div>
           ) : (
-            `${parseFloat(balance).toFixed(2)} ${symbol}`
+            `${parseFloat(balance).toFixed(2)} ${displayName}`
           )}
         </div>
       </div>

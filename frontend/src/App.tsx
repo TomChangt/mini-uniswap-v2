@@ -48,8 +48,16 @@ function App() {
                     代币余额
                   </h2>
                   <div className="space-y-4">
-                    <TokenBalance tokenName="TokenA" />
-                    <TokenBalance tokenName="TokenB" />
+                    <TokenBalance
+                      tokenName="TokenA"
+                      displayName="USDT"
+                      symbolName="USDT"
+                    />
+                    <TokenBalance
+                      tokenName="TokenB"
+                      displayName="ETH"
+                      symbolName="ETH"
+                    />
                   </div>
                 </div>
               </div>

@@ -252,16 +252,54 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
 
     // 监听账户变化
     if (window.ethereum) {
-      window.ethereum.on("accountsChanged", (accounts: string[]) => {
+      window.ethereum.on("accountsChanged", async (accounts: string[]) => {
         if (accounts.length === 0) {
           disconnectWallet();
         } else {
-          setAccount(accounts[0]);
+          console.log("账户已切换到:", accounts[0]);
+          try {
+            // 重新获取provider和signer
+            const provider = new ethers.BrowserProvider(window.ethereum!);
+            const signer = await provider.getSigner();
+
+            // 更新状态
+            setProvider(provider);
+            setSigner(signer);
+            setAccount(accounts[0]);
+
+            // 重新初始化所有合约实例以使用新的signer
+            if (addresses.tokenA) {
+              setTokenAContract(
+                new ethers.Contract(addresses.tokenA, ERC20_ABI, signer)
+              );
+            }
+            if (addresses.tokenB) {
+              setTokenBContract(
+                new ethers.Contract(addresses.tokenB, ERC20_ABI, signer)
+              );
+            }
+            if (addresses.factory) {
+              setFactoryContract(
+                new ethers.Contract(addresses.factory, FACTORY_ABI, signer)
+              );
+            }
+            if (addresses.router) {
+              setRouterContract(
+                new ethers.Contract(addresses.router, ROUTER_ABI, signer)
+              );
+            }
+
+            console.log("合约实例已使用新账户重新初始化");
+          } catch (error) {
+            console.error("切换账户时重新初始化失败:", error);
+          }
         }
       });
 
       window.ethereum.on("chainChanged", (chainId: string) => {
         setChainId(parseInt(chainId, 16));
+        // 网络切换时也应该重新连接
+        window.location.reload();
       });
     }
 
