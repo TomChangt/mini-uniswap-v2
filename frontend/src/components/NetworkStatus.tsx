@@ -5,7 +5,7 @@ const NetworkStatus: React.FC = () => {
   const { chainId, isConnected, switchToAvalanche } = useWeb3();
 
   // Avalanche L1 链 ID
-  const AVALANCHE_L1_CHAIN_ID = 202505261834;
+  const AVALANCHE_L1_CHAIN_ID = 202505300407;
   const isCorrectNetwork = chainId === AVALANCHE_L1_CHAIN_ID;
 
   if (!isConnected) {
