@@ -16,7 +16,7 @@ const config: HardhatUserConfig = {
       chainId: 31337,
     },
     avalanche: {
-      url: "http://127.0.0.1:49370/ext/bc/oHSfmKP2fJ6YtMjuYkSPDAsB7rosB5LGDnthz82HuM1s1gYBM/rpc",
+      url: "http://127.0.0.1:59792/ext/bc/oHSfmKP2fJ6YtMjuYkSPDAsB7rosB5LGDnthz82HuM1s1gYBM/rpc",
       chainId: 202505261834,
       accounts: [
         // 使用测试私钥，实际项目中请使用环境变量
