@@ -1,633 +1,602 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect } from "react";
+import { ethers } from "ethers";
 import { useWeb3 } from "../contexts/Web3Context";
 import { useNotification } from "../contexts/NotificationContext";
-import { ethers } from "ethers";
-import addresses from "../contracts/addresses.json";
+import { TokenInfo } from "../utils/tokenStorage";
 
-const LiquidityInterface: React.FC = () => {
+interface LiquidityInterfaceProps {
+  importedTokens: TokenInfo[];
+  onBalanceUpdate?: () => void;
+}
+
+const LiquidityInterface: React.FC<LiquidityInterfaceProps> = ({
+  importedTokens,
+  onBalanceUpdate,
+}) => {
   const {
-    account,
-    tokenAContract,
-    tokenBContract,
+    signer,
     routerContract,
     factoryContract,
     isConnected,
-    tokenABalance,
-    tokenBBalance,
-    refreshTokenBalances,
+    tokenBalances,
   } = useWeb3();
-  const { showSuccess, showError, showInfo } = useNotification();
-  const [activeTab, setActiveTab] = useState<"add" | "remove">("add");
+  const { addNotification } = useNotification();
 
-  // 添加流动性状态
-  const [amountA, setAmountA] = useState<string>("");
-  const [amountB, setAmountB] = useState<string>("");
-  const [lastEditedField, setLastEditedField] = useState<"A" | "B" | null>(
-    null
-  );
-  const [reserves, setReserves] = useState<{
-    reserveA: string;
-    reserveB: string;
-  }>({ reserveA: "0", reserveB: "0" });
-
-  // 防抖定时器引用
-  const debounceTimerA = useRef<NodeJS.Timeout | null>(null);
-  const debounceTimerB = useRef<NodeJS.Timeout | null>(null);
-
-  // 移除流动性状态
-  const [lpBalance, setLpBalance] = useState<string>("0");
-  const [removePercentage, setRemovePercentage] = useState<number>(25);
-  const [removeAmountA, setRemoveAmountA] = useState<string>("0");
-  const [removeAmountB, setRemoveAmountB] = useState<string>("0");
-
+  const [tokenA, setTokenA] = useState<TokenInfo | null>(null);
+  const [tokenB, setTokenB] = useState<TokenInfo | null>(null);
+  const [amountA, setAmountA] = useState("");
+  const [amountB, setAmountB] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pairAddress, setPairAddress] = useState<string>("");
+  const [mode, setMode] = useState<"add" | "remove">("add");
+  const [lpTokenBalance, setLpTokenBalance] = useState("0");
+  const [removePercentage, setRemovePercentage] = useState("25");
 
-  // 代币显示名称转换函数
-  const getDisplayName = (tokenName: "A" | "B") => {
-    return tokenName === "A" ? "USDT" : "ETH";
-  };
+  const ERC20_ABI = [
+    "function approve(address spender, uint256 amount) returns (bool)",
+    "function allowance(address owner, address spender) view returns (uint256)",
+    "function balanceOf(address owner) view returns (uint256)",
+    "function decimals() view returns (uint8)",
+    "function totalSupply() view returns (uint256)",
+    "function transfer(address to, uint256 amount) returns (bool)",
+  ];
 
-  // 创建可复用的数据刷新函数
-  const refreshData = useCallback(async () => {
-    if (!account || !tokenAContract || !tokenBContract || !factoryContract)
+  const PAIR_ABI = [
+    "function balanceOf(address owner) view returns (uint256)",
+    "function totalSupply() view returns (uint256)",
+    "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
+    "function token0() view returns (address)",
+    "function token1() view returns (address)",
+    "function approve(address spender, uint256 amount) returns (bool)",
+    "function allowance(address owner, address spender) view returns (uint256)",
+    "function transferFrom(address from, address to, uint256 amount) returns (bool)",
+  ];
+
+  // 获取流动性代币余额
+  const fetchLPTokenBalance = async () => {
+    if (!factoryContract || !signer || !tokenA || !tokenB) {
+      console.log("❌ LP余额获取条件不满足:", {
+        factoryContract: !!factoryContract,
+        signer: !!signer,
+        tokenA: !!tokenA,
+        tokenB: !!tokenB,
+      });
       return;
+    }
 
     try {
-      // 代币余额已由 Web3Context 统一管理
+      console.log("🔍 获取LP代币余额...");
+      console.log("代币对:", tokenA.symbol, "➔", tokenB.symbol);
 
-      // 获取交易对地址
-      const pair = await factoryContract.getPair(
-        addresses.tokenA,
-        addresses.tokenB
+      const pairAddress = await factoryContract.getPair(
+        tokenA.address,
+        tokenB.address
       );
-      setPairAddress(pair);
+      console.log("交易对地址:", pairAddress);
 
-      // 如果交易对存在，获取LP代币余额和储备量
-      if (pair !== ethers.ZeroAddress) {
-        const pairContract = new ethers.Contract(
-          pair,
-          [
-            "function balanceOf(address) view returns (uint256)",
-            "function getReserves() view returns (uint112, uint112, uint32)",
-            "function token0() view returns (address)",
-          ],
-          tokenAContract.runner
-        );
-        const [lpBal, reservesData, token0] = await Promise.all([
-          pairContract.balanceOf(account),
-          pairContract.getReserves(),
-          pairContract.token0(),
-        ]);
-
-        setLpBalance(ethers.formatEther(lpBal));
-
-        // 确定 TokenA 和 TokenB 的储备量
-        const isTokenAFirst =
-          token0.toLowerCase() === addresses.tokenA.toLowerCase();
-        setReserves({
-          reserveA: ethers.formatEther(
-            isTokenAFirst ? reservesData[0] : reservesData[1]
-          ),
-          reserveB: ethers.formatEther(
-            isTokenAFirst ? reservesData[1] : reservesData[0]
-          ),
-        });
-      } else {
-        setReserves({ reserveA: "0", reserveB: "0" });
-      }
-    } catch (error) {
-      console.error("获取数据失败:", error);
-    }
-  }, [account, tokenAContract, tokenBContract, factoryContract]);
-
-  useEffect(() => {
-    refreshData();
-  }, [account, tokenAContract, tokenBContract, factoryContract, refreshData]);
-
-  // 智能计算流动性比例 - 使用防抖和防循环逻辑
-  useEffect(() => {
-    if (
-      amountA &&
-      lastEditedField === "A" &&
-      parseFloat(reserves.reserveA) > 0 &&
-      parseFloat(reserves.reserveB) > 0
-    ) {
-      if (debounceTimerA.current) {
-        clearTimeout(debounceTimerA.current);
-      }
-
-      debounceTimerA.current = setTimeout(() => {
-        const requiredB =
-          (parseFloat(amountA) * parseFloat(reserves.reserveB)) /
-          parseFloat(reserves.reserveA);
-        setAmountB(requiredB.toFixed(6));
-        setLastEditedField(null); // 重置编辑状态
-      }, 300); // 300ms 防抖
-    }
-  }, [amountA, reserves, lastEditedField]);
-
-  useEffect(() => {
-    if (
-      amountB &&
-      lastEditedField === "B" &&
-      parseFloat(reserves.reserveA) > 0 &&
-      parseFloat(reserves.reserveB) > 0
-    ) {
-      if (debounceTimerB.current) {
-        clearTimeout(debounceTimerB.current);
-      }
-
-      debounceTimerB.current = setTimeout(() => {
-        const requiredA =
-          (parseFloat(amountB) * parseFloat(reserves.reserveA)) /
-          parseFloat(reserves.reserveB);
-        setAmountA(requiredA.toFixed(6));
-        setLastEditedField(null); // 重置编辑状态
-      }, 300); // 300ms 防抖
-    }
-  }, [amountB, reserves, lastEditedField]);
-
-  // 清理定时器
-  useEffect(() => {
-    return () => {
-      if (debounceTimerA.current) {
-        clearTimeout(debounceTimerA.current);
-      }
-      if (debounceTimerB.current) {
-        clearTimeout(debounceTimerB.current);
-      }
-    };
-  }, []);
-
-  // 计算移除流动性时能获得的代币数量
-  useEffect(() => {
-    const calculateRemoveAmounts = async () => {
-      if (
-        !pairAddress ||
-        pairAddress === ethers.ZeroAddress ||
-        !lpBalance ||
-        parseFloat(lpBalance) === 0
-      ) {
-        setRemoveAmountA("0");
-        setRemoveAmountB("0");
+      if (pairAddress === ethers.ZeroAddress) {
+        console.log("❌ 交易对不存在");
+        setLpTokenBalance("0");
         return;
       }
 
-      try {
-        const pairContract = new ethers.Contract(
-          pairAddress,
-          [
-            "function getReserves() view returns (uint112, uint112, uint32)",
-            "function totalSupply() view returns (uint256)",
-          ],
-          tokenAContract?.runner
+      const pairContract = new ethers.Contract(pairAddress, PAIR_ABI, signer);
+      const signerAddress = await signer.getAddress();
+      const balance = await pairContract.balanceOf(signerAddress);
+      const decimals = 18; // LP代币默认18位小数
+      const formattedBalance = ethers.formatUnits(balance, decimals);
+
+      console.log("✅ LP代币余额获取成功:", formattedBalance);
+      setLpTokenBalance(formattedBalance);
+    } catch (error) {
+      console.error("❌ 获取LP代币余额失败:", error);
+      setLpTokenBalance("0");
+    }
+  };
+
+  // 检查并授权代币
+  const checkAndApproveToken = async (token: TokenInfo, amount: string) => {
+    if (!signer || !routerContract) return false;
+
+    try {
+      const tokenContract = new ethers.Contract(
+        token.address,
+        ERC20_ABI,
+        signer
+      );
+      const amountToApprove = ethers.parseUnits(amount, token.decimals);
+      const signerAddress = await signer.getAddress();
+      const routerAddress = await routerContract.getAddress();
+
+      const currentAllowance = await tokenContract.allowance(
+        signerAddress,
+        routerAddress
+      );
+
+      if (currentAllowance < amountToApprove) {
+        addNotification({
+          type: "info",
+          title: "授权确认",
+          message: `需要授权 ${token.symbol}，请确认交易`,
+        });
+        const approveTx = await tokenContract.approve(
+          routerAddress,
+          amountToApprove
         );
-
-        const [reserves, totalSupply] = await Promise.all([
-          pairContract.getReserves(),
-          pairContract.totalSupply(),
-        ]);
-
-        const lpToRemove = ethers.parseEther(
-          ((parseFloat(lpBalance) * removePercentage) / 100).toString()
-        );
-        const amountA = (lpToRemove * reserves[0]) / totalSupply;
-        const amountB = (lpToRemove * reserves[1]) / totalSupply;
-
-        setRemoveAmountA(ethers.formatEther(amountA));
-        setRemoveAmountB(ethers.formatEther(amountB));
-      } catch (error) {
-        console.error("计算移除数量失败:", error);
+        await approveTx.wait();
+        addNotification({
+          type: "success",
+          title: "授权成功",
+          message: `${token.symbol} 授权成功`,
+        });
       }
-    };
 
-    calculateRemoveAmounts();
-  }, [pairAddress, lpBalance, removePercentage, tokenAContract]);
+      return true;
+    } catch (error) {
+      console.error("授权失败:", error);
+      addNotification({
+        type: "error",
+        title: "授权失败",
+        message: `${token.symbol} 授权失败`,
+      });
+      return false;
+    }
+  };
 
+  // 添加流动性
   const handleAddLiquidity = async () => {
     if (
-      !tokenAContract ||
-      !tokenBContract ||
       !routerContract ||
-      !account ||
+      !signer ||
+      !tokenA ||
+      !tokenB ||
       !amountA ||
       !amountB
     ) {
-      showError("参数错误", "请确保所有必要的参数都已提供");
+      addNotification({
+        type: "error",
+        title: "信息不完整",
+        message: "请填写完整的流动性信息",
+      });
       return;
     }
 
     setLoading(true);
+
     try {
-      const amountADesired = ethers.parseEther(amountA);
-      const amountBDesired = ethers.parseEther(amountB);
-      const amountAMin = (amountADesired * BigInt(95)) / BigInt(100); // 5% 滑点
+      // 1. 授权两个代币
+      const approveA = await checkAndApproveToken(tokenA, amountA);
+      if (!approveA) {
+        setLoading(false);
+        return;
+      }
+
+      const approveB = await checkAndApproveToken(tokenB, amountB);
+      if (!approveB) {
+        setLoading(false);
+        return;
+      }
+
+      // 2. 计算最小数量（5%滑点）
+      const amountADesired = ethers.parseUnits(amountA, tokenA.decimals);
+      const amountBDesired = ethers.parseUnits(amountB, tokenB.decimals);
+      const amountAMin = (amountADesired * BigInt(95)) / BigInt(100);
       const amountBMin = (amountBDesired * BigInt(95)) / BigInt(100);
-      const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟
 
-      // 前置检查
-      showInfo("正在执行前置检查 🔍", "检查余额和流动性池状态...");
+      const to = await signer.getAddress();
+      const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
 
-      // 检查用户余额
-      const [balanceA, balanceB] = await Promise.all([
-        tokenAContract.balanceOf(account),
-        tokenBContract.balanceOf(account),
-      ]);
+      addNotification({
+        type: "info",
+        title: "添加中",
+        message: "正在添加流动性...",
+      });
 
-      if (balanceA < amountADesired) {
-        throw new Error(
-          `USDT 余额不足，当前余额: ${ethers.formatEther(
-            balanceA
-          )} USDT，需要: ${amountA} USDT`
-        );
-      }
-
-      if (balanceB < amountBDesired) {
-        throw new Error(
-          `ETH 余额不足，当前余额: ${ethers.formatEther(
-            balanceB
-          )} ETH，需要: ${amountB} ETH`
-        );
-      }
-
-      // 检查池子状态和比例
-      const pair = await factoryContract?.getPair(
-        addresses.tokenA,
-        addresses.tokenB
-      );
-      let isFirstLiquidity = false;
-
-      if (pair && pair !== ethers.ZeroAddress) {
-        // 池子已存在，检查比例
-        const pairContract = new ethers.Contract(
-          pair,
-          [
-            "function getReserves() view returns (uint112, uint112, uint32)",
-            "function token0() view returns (address)",
-          ],
-          tokenAContract.runner
-        );
-
-        try {
-          const [reservesData, token0] = await Promise.all([
-            pairContract.getReserves(),
-            pairContract.token0(),
-          ]);
-
-          if (reservesData[0] > 0 || reservesData[1] > 0) {
-            // 确定 TokenA 和 TokenB 的储备量
-            const isTokenAFirst =
-              token0.toLowerCase() === addresses.tokenA.toLowerCase();
-            const reserveA = isTokenAFirst ? reservesData[0] : reservesData[1];
-            const reserveB = isTokenAFirst ? reservesData[1] : reservesData[0];
-
-            // 计算期望的比例
-            const currentRatio = Number(reserveB) / Number(reserveA);
-            const inputRatio = parseFloat(amountB) / parseFloat(amountA);
-            const ratioDiff =
-              Math.abs(currentRatio - inputRatio) / currentRatio;
-
-            // 如果比例偏差超过10%，给出警告
-            if (ratioDiff > 0.1) {
-              const expectedAmountB = (
-                parseFloat(amountA) * currentRatio
-              ).toFixed(6);
-              const expectedAmountA = (
-                parseFloat(amountB) / currentRatio
-              ).toFixed(6);
-
-              showInfo(
-                "比例提醒 ⚖️",
-                `当前池比例: 1 USDT = ${currentRatio.toFixed(
-                  6
-                )} ETH。建议调整数量以匹配比例，或者使用 ${expectedAmountA} USDT 和 ${amountB} ETH，或者使用 ${amountA} USDT 和 ${expectedAmountB} ETH`
-              );
-            }
-          } else {
-            isFirstLiquidity = true;
-          }
-        } catch (error) {
-          console.warn("无法获取储备量，可能是首次添加流动性");
-          isFirstLiquidity = true;
-        }
-      } else {
-        isFirstLiquidity = true;
-        showInfo("创建新的交易对 🆕", "这是该交易对的首次流动性添加");
-      }
-
-      showInfo("正在检查授权 🔍", "检查代币授权状态...");
-
-      // 检查并授权 TokenA
-      const allowanceA = await tokenAContract.allowance(
-        account,
-        addresses.router
-      );
-      if (allowanceA < amountADesired) {
-        showInfo("正在授权 USDT 📝", "请在钱包中确认 USDT 授权交易...");
-        const approveTxA = await tokenAContract.approve(
-          addresses.router,
-          ethers.MaxUint256
-        );
-        showInfo("等待授权确认 ⏳", "USDT 授权交易已提交，等待确认...");
-        await approveTxA.wait();
-        showSuccess("USDT 授权成功 ✅", "USDT 授权已完成");
-      }
-
-      // 检查并授权 TokenB
-      const allowanceB = await tokenBContract.allowance(
-        account,
-        addresses.router
-      );
-      if (allowanceB < amountBDesired) {
-        showInfo("正在授权 ETH 📝", "请在钱包中确认 ETH 授权交易...");
-        const approveTxB = await tokenBContract.approve(
-          addresses.router,
-          ethers.MaxUint256
-        );
-        showInfo("等待授权确认 ⏳", "ETH 授权交易已提交，等待确认...");
-        await approveTxB.wait();
-        showSuccess("ETH 授权成功 ✅", "ETH 授权已完成");
-      }
-
-      // 添加流动性
-      showInfo("正在添加流动性 💧", "请在钱包中确认添加流动性交易...");
-      const addLiquidityTx = await routerContract.addLiquidity(
-        addresses.tokenA,
-        addresses.tokenB,
+      // 3. 添加流动性
+      const tx = await routerContract.addLiquidity(
+        tokenA.address,
+        tokenB.address,
         amountADesired,
         amountBDesired,
         amountAMin,
         amountBMin,
-        account,
+        to,
         deadline
       );
 
-      showInfo("等待交易确认 ⏳", "添加流动性交易已提交，等待确认...");
-      const receipt = await addLiquidityTx.wait();
-      console.log("添加流动性成功! 交易哈希:", receipt?.hash);
+      await tx.wait();
+      addNotification({
+        type: "success",
+        title: "添加成功",
+        message: "流动性添加成功！",
+      });
 
-      // 重置表单
+      // 4. 重置表单
       setAmountA("");
       setAmountB("");
+      fetchLPTokenBalance();
 
-      // 延迟刷新数据
-      setTimeout(async () => {
-        await refreshData();
-        await refreshTokenBalances();
-      }, 1000);
-
-      showSuccess(
-        "添加流动性成功! 🎉",
-        `成功添加 ${amountA} ${getDisplayName(
-          "A"
-        )} 和 ${amountB} ${getDisplayName("B")} 到流动性池${
-          isFirstLiquidity ? "（首次流动性）" : ""
-        }`
-      );
-    } catch (error: any) {
-      console.error("添加流动性失败:", error);
-
-      // 更详细的错误处理
-      let errorMessage = "未知错误，请重试";
-      if (error.code === 4001) {
-        errorMessage = "用户取消了交易";
-      } else if (error.message.includes("INSUFFICIENT_A_AMOUNT")) {
-        errorMessage =
-          "USDT 数量不足，当前价格下实际需要的 USDT 数量低于您设置的最小值";
-      } else if (error.message.includes("INSUFFICIENT_B_AMOUNT")) {
-        errorMessage =
-          "ETH 数量不足，当前价格下实际需要的 ETH 数量低于您设置的最小值";
-      } else if (error.message.includes("TRANSFER_FROM_FAILED")) {
-        errorMessage = "代币转账失败，请检查授权是否成功";
-      } else if (error.message.includes("余额不足")) {
-        errorMessage = error.message;
-      } else if (
-        error.message.includes("USDT 余额不足") ||
-        error.message.includes("ETH 余额不足")
-      ) {
-        errorMessage = error.message;
-      } else if (error.code === -32603) {
-        errorMessage = "交易执行失败，可能是余额不足、授权问题或网络问题";
-      } else if (error.message) {
-        errorMessage = error.message;
+      if (onBalanceUpdate) {
+        onBalanceUpdate();
       }
-
-      showError("添加流动性失败 😞", `操作失败: ${errorMessage}`);
+    } catch (error) {
+      console.error("添加流动性失败:", error);
+      addNotification({
+        type: "error",
+        title: "添加失败",
+        message: "添加流动性失败",
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  // 移除流动性
   const handleRemoveLiquidity = async () => {
-    if (
-      !routerContract ||
-      !account ||
-      !lpBalance ||
-      parseFloat(lpBalance) === 0
-    ) {
-      showError("参数错误", "请确保有足够的LP代币可以移除");
+    if (!routerContract || !signer || !tokenA || !tokenB || !factoryContract) {
+      addNotification({
+        type: "error",
+        title: "信息不完整",
+        message: "请选择代币对",
+      });
       return;
     }
 
     setLoading(true);
+
     try {
-      const liquidity = ethers.parseEther(
-        ((parseFloat(lpBalance) * removePercentage) / 100).toString()
+      console.log("🔄 开始移除流动性...");
+      console.log("代币A:", tokenA.symbol, tokenA.address);
+      console.log("代币B:", tokenB.symbol, tokenB.address);
+      console.log("移除比例:", removePercentage + "%");
+
+      // 1. 获取交易对地址
+      const pairAddress = await factoryContract.getPair(
+        tokenA.address,
+        tokenB.address
       );
-      const amountAMin =
-        (ethers.parseEther(removeAmountA) * BigInt(95)) / BigInt(100); // 5% 滑点
-      const amountBMin =
-        (ethers.parseEther(removeAmountB) * BigInt(95)) / BigInt(100);
-      const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟
+      console.log("交易对地址:", pairAddress);
 
-      // 授权LP代币
-      showInfo("正在授权LP代币 📝", "请在钱包中确认LP代币授权交易...");
-      const pairContract = new ethers.Contract(
-        pairAddress,
-        ["function approve(address, uint256) returns (bool)"],
-        tokenAContract?.runner
+      if (pairAddress === ethers.ZeroAddress) {
+        addNotification({
+          type: "error",
+          title: "交易对不存在",
+          message: "该交易对不存在",
+        });
+        setLoading(false);
+        return;
+      }
+
+      // 2. 计算要移除的LP代币数量
+      const pairContract = new ethers.Contract(pairAddress, PAIR_ABI, signer);
+      const signerAddress = await signer.getAddress();
+      const lpBalance = await pairContract.balanceOf(signerAddress);
+      const removeAmount = (lpBalance * BigInt(removePercentage)) / BigInt(100);
+
+      console.log("LP代币余额:", ethers.formatUnits(lpBalance, 18));
+      console.log("要移除数量:", ethers.formatUnits(removeAmount, 18));
+
+      if (removeAmount === BigInt(0)) {
+        addNotification({
+          type: "error",
+          title: "余额不足",
+          message: "没有足够的流动性代币",
+        });
+        setLoading(false);
+        return;
+      }
+
+      // 3. 授权LP代币给路由器
+      const routerAddress = await routerContract.getAddress();
+      console.log("路由器地址:", routerAddress);
+
+      // 检查当前授权
+      const currentAllowance = await pairContract.allowance(
+        signerAddress,
+        routerAddress
       );
+      console.log("当前LP代币授权:", ethers.formatUnits(currentAllowance, 18));
 
-      const approveTx = await pairContract.approve(addresses.router, liquidity);
-      showInfo("等待授权确认 ⏳", "LP代币授权交易已提交，等待确认...");
-      await approveTx.wait();
-      showSuccess("LP代币授权成功 ✅", "LP代币授权已完成");
+      if (currentAllowance < removeAmount) {
+        console.log("需要授权LP代币...");
+        addNotification({
+          type: "info",
+          title: "授权确认",
+          message: "需要授权LP代币，请确认交易",
+        });
 
-      // 移除流动性
-      showInfo("正在移除流动性 🔥", "请在钱包中确认移除流动性交易...");
-      const removeLiquidityTx = await routerContract.removeLiquidity(
-        addresses.tokenA,
-        addresses.tokenB,
-        liquidity,
+        const approveTx = await pairContract.approve(
+          routerAddress,
+          removeAmount
+        );
+        await approveTx.wait();
+        console.log("LP代币授权成功");
+
+        addNotification({
+          type: "success",
+          title: "授权成功",
+          message: "LP代币授权成功",
+        });
+      }
+
+      // 4. 计算最小获得数量（5%滑点）
+      const reserves = await pairContract.getReserves();
+      const totalSupply = await pairContract.totalSupply();
+      const token0 = await pairContract.token0();
+
+      console.log("储备量:", {
+        reserve0: ethers.formatUnits(reserves[0], 18),
+        reserve1: ethers.formatUnits(reserves[1], 18),
+        totalSupply: ethers.formatUnits(totalSupply, 18),
+      });
+
+      // 确定代币顺序并计算最小数量
+      let amountAMin, amountBMin;
+      if (token0.toLowerCase() === tokenA.address.toLowerCase()) {
+        // tokenA 是 token0
+        amountAMin =
+          (reserves[0] * removeAmount * BigInt(95)) /
+          (totalSupply * BigInt(100));
+        amountBMin =
+          (reserves[1] * removeAmount * BigInt(95)) /
+          (totalSupply * BigInt(100));
+      } else {
+        // tokenA 是 token1
+        amountAMin =
+          (reserves[1] * removeAmount * BigInt(95)) /
+          (totalSupply * BigInt(100));
+        amountBMin =
+          (reserves[0] * removeAmount * BigInt(95)) /
+          (totalSupply * BigInt(100));
+      }
+
+      console.log("最小获得数量:", {
+        amountAMin: ethers.formatUnits(amountAMin, tokenA.decimals),
+        amountBMin: ethers.formatUnits(amountBMin, tokenB.decimals),
+      });
+
+      const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
+
+      addNotification({
+        type: "info",
+        title: "移除中",
+        message: "正在移除流动性...",
+      });
+
+      // 5. 移除流动性
+      console.log("调用removeLiquidity...");
+      const tx = await routerContract.removeLiquidity(
+        tokenA.address,
+        tokenB.address,
+        removeAmount,
         amountAMin,
         amountBMin,
-        account,
+        signerAddress,
         deadline
       );
 
-      showInfo("等待交易确认 ⏳", "移除流动性交易已提交，等待确认...");
-      const receipt = await removeLiquidityTx.wait();
-      console.log("移除流动性成功! 交易哈希:", receipt?.hash);
+      console.log("交易哈希:", tx.hash);
+      await tx.wait();
+      console.log("移除流动性成功");
 
-      // 延迟刷新数据
-      setTimeout(async () => {
-        await refreshData();
-        await refreshTokenBalances();
-      }, 1000);
+      addNotification({
+        type: "success",
+        title: "移除成功",
+        message: `成功移除 ${removePercentage}% 的流动性！`,
+      });
 
-      showSuccess(
-        "移除流动性成功! 🎉",
-        `成功移除 ${removePercentage}% 的流动性，获得 ${parseFloat(
-          removeAmountA
-        ).toFixed(4)} ${getDisplayName("A")} 和 ${parseFloat(
-          removeAmountB
-        ).toFixed(4)} ${getDisplayName("B")}`
-      );
+      fetchLPTokenBalance();
+
+      if (onBalanceUpdate) {
+        onBalanceUpdate();
+      }
     } catch (error: any) {
       console.error("移除流动性失败:", error);
 
-      // 更详细的错误处理
-      let errorMessage = "未知错误，请重试";
-      if (error.code === 4001) {
-        errorMessage = "用户取消了交易";
-      } else if (error.code === -32603) {
-        errorMessage = "交易执行失败，可能是LP代币不足或网络问题";
+      let errorMessage = "移除流动性失败";
+      if (error.reason) {
+        errorMessage = error.reason;
       } else if (error.message) {
-        errorMessage = error.message;
+        if (error.message.includes("user rejected")) {
+          errorMessage = "用户取消了交易";
+        } else if (error.message.includes("insufficient allowance")) {
+          errorMessage = "授权不足，请重新授权";
+        } else if (error.message.includes("insufficient balance")) {
+          errorMessage = "LP代币余额不足";
+        } else {
+          errorMessage = `交易失败: ${error.message}`;
+        }
       }
 
-      showError("移除流动性失败 😞", `操作失败: ${errorMessage}`);
+      addNotification({
+        type: "error",
+        title: "移除失败",
+        message: errorMessage,
+      });
     } finally {
       setLoading(false);
     }
   };
 
+  // 当代币对变化时获取LP代币余额
+  useEffect(() => {
+    if (tokenA && tokenB && tokenA.address !== tokenB.address) {
+      fetchLPTokenBalance();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tokenA, tokenB]);
+
   if (!isConnected) {
     return (
-      <div className="glass-card p-6 card-animation">
-        <div className="flex items-center mb-6">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-r from-purple-400 to-blue-500 flex items-center justify-center mr-3">
-            <span className="text-white font-bold">💧</span>
-          </div>
-          <h2 className="text-xl font-bold text-slate-100">流动性管理</h2>
+      <div className="text-center py-12">
+        <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-r from-green-500/20 to-emerald-500/20 flex items-center justify-center">
+          <span className="text-3xl">🔗</span>
         </div>
-        <div className="text-center py-12">
-          <div className="text-6xl mb-4">🔐</div>
-          <p className="text-slate-300 text-lg">请先连接钱包以管理流动性</p>
+        <h3 className="text-lg font-semibold text-primary mb-2">
+          连接钱包开始
+        </h3>
+        <p className="text-secondary text-sm">请先连接您的钱包以管理流动性</p>
+      </div>
+    );
+  }
+
+  if (importedTokens.length < 2) {
+    return (
+      <div className="text-center py-12">
+        <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-r from-orange-500/20 to-yellow-500/20 flex items-center justify-center">
+          <span className="text-3xl">📝</span>
+        </div>
+        <h3 className="text-lg font-semibold text-primary mb-2">
+          需要更多代币
+        </h3>
+        <p className="text-secondary text-sm mb-4">
+          至少需要导入 2 个代币才能管理流动性
+        </p>
+        <div className="info-card inline-block">
+          <p className="text-sm">💡 请先在"导入代币"页面添加需要的代币对</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="glass-card p-6 card-animation">
-      <div className="flex items-center mb-6">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-r from-purple-400 to-blue-500 flex items-center justify-center mr-3">
-          <span className="text-white font-bold">💧</span>
-        </div>
-        <h2 className="text-xl font-bold text-slate-100">流动性管理</h2>
+    <div className="space-y-6">
+      <div className="text-center mb-6">
+        <h2 className="text-2xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
+          <span>💧</span> 流动性管理
+        </h2>
+        <p className="text-secondary text-sm">
+          添加或移除流动性以赚取交易手续费
+        </p>
       </div>
 
-      {/* 标签切换 */}
-      <div className="glass-card p-1 mb-6">
-        <div className="flex relative">
+      {/* 模式切换 */}
+      <div className="tab-container">
+        <div className="grid grid-cols-2 gap-1">
           <button
-            onClick={() => setActiveTab("add")}
-            className={`flex-1 px-6 py-4 font-medium text-sm rounded-xl transition-all duration-300 ${
-              activeTab === "add"
-                ? "bg-white/15 text-slate-100 shadow-lg"
-                : "text-slate-300 hover:text-slate-100 hover:bg-white/10"
-            }`}
+            onClick={() => setMode("add")}
+            className={`tab-button ${mode === "add" ? "active" : ""}`}
           >
-            <span className="mr-2">➕</span>
-            添加流动性
+            <span>➕</span>添加流动性
           </button>
           <button
-            onClick={() => setActiveTab("remove")}
-            className={`flex-1 px-6 py-4 font-medium text-sm rounded-xl transition-all duration-300 ${
-              activeTab === "remove"
-                ? "bg-white/15 text-slate-100 shadow-lg"
-                : "text-slate-300 hover:text-slate-100 hover:bg-white/10"
-            }`}
+            onClick={() => setMode("remove")}
+            className={`tab-button ${mode === "remove" ? "active" : ""}`}
           >
-            <span className="mr-2">➖</span>
-            移除流动性
+            <span>➖</span>移除流动性
           </button>
         </div>
       </div>
 
-      {activeTab === "add" && (
-        <div>
-          {/* 显示当前池比例 */}
-          {parseFloat(reserves.reserveA) > 0 &&
-            parseFloat(reserves.reserveB) > 0 && (
-              <div className="mb-6 glass-card p-4">
-                <div className="flex items-center mb-3">
-                  <span className="text-lg mr-2">📊</span>
-                  <div className="font-medium text-slate-100">当前池比例</div>
-                </div>
-                <div className="space-y-2">
-                  <div className="text-blue-300 flex items-center">
-                    <span className="mr-2">💱</span>1 {getDisplayName("A")} ={" "}
-                    {(
-                      parseFloat(reserves.reserveB) /
-                      parseFloat(reserves.reserveA)
-                    ).toFixed(6)}{" "}
-                    {getDisplayName("B")}
-                  </div>
-                  <div className="text-green-300 flex items-center">
-                    <span className="mr-2">🏦</span>
-                    池中储备: {parseFloat(reserves.reserveA).toFixed(2)}{" "}
-                    {getDisplayName("A")} /{" "}
-                    {parseFloat(reserves.reserveB).toFixed(2)}{" "}
-                    {getDisplayName("B")}
-                  </div>
-                </div>
-              </div>
-            )}
-
-          {/* TokenA 输入 */}
-          <div className="mb-4 glass-card p-4">
-            <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-              <span className="mr-2">🔷</span>
-              {getDisplayName("A")} 数量
+      {/* 代币选择 */}
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-semibold text-primary mb-3">
+              代币 A
             </label>
-            <input
-              type="number"
-              value={amountA}
+            <select
+              value={tokenA?.address || ""}
               onChange={(e) => {
-                setAmountA(e.target.value);
-                setLastEditedField("A");
+                const token = importedTokens.find(
+                  (t) => t.address === e.target.value
+                );
+                setTokenA(token || null);
               }}
-              placeholder="0.0"
-              className="custom-input w-full"
-            />
-            <div className="text-sm text-slate-300 mt-2 flex items-center">
-              <span className="mr-1">💰</span>
-              余额: {parseFloat(tokenABalance).toFixed(4)} {getDisplayName("A")}
-            </div>
+              className="dapp-select"
+              disabled={loading}
+            >
+              <option value="">选择代币</option>
+              {importedTokens.map((token) => (
+                <option key={token.address} value={token.address}>
+                  {token.name} ({token.symbol})
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* TokenB 输入 */}
-          <div className="mb-6 glass-card p-4">
-            <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-              <span className="mr-2">🔶</span>
-              {getDisplayName("B")} 数量
+          <div>
+            <label className="block text-sm font-semibold text-primary mb-3">
+              代币 B
             </label>
-            <input
-              type="number"
-              value={amountB}
+            <select
+              value={tokenB?.address || ""}
               onChange={(e) => {
-                setAmountB(e.target.value);
-                setLastEditedField("B");
+                const token = importedTokens.find(
+                  (t) => t.address === e.target.value
+                );
+                setTokenB(token || null);
               }}
-              placeholder="0.0"
-              className="custom-input w-full"
-            />
-            <div className="text-sm text-slate-300 mt-2 flex items-center">
-              <span className="mr-1">💰</span>
-              余额: {parseFloat(tokenBBalance).toFixed(4)} {getDisplayName("B")}
+              className="dapp-select"
+              disabled={loading}
+            >
+              <option value="">选择代币</option>
+              {importedTokens.map((token) => (
+                <option key={token.address} value={token.address}>
+                  {token.name} ({token.symbol})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* LP代币余额显示 */}
+        {tokenA && tokenB && tokenA.address !== tokenB.address && (
+          <div className="success-card">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">LP代币余额:</span>
+              <span className="text-sm font-mono">
+                {parseFloat(lpTokenBalance).toFixed(6)} {tokenA.symbol}-
+                {tokenB.symbol}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {mode === "add" ? (
+        // 添加流动性界面
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-semibold text-primary mb-3">
+                {tokenA?.symbol || "代币A"} 数量
+              </label>
+              <input
+                type="number"
+                value={amountA}
+                onChange={(e) => setAmountA(e.target.value)}
+                placeholder="0.0"
+                className="dapp-input"
+                disabled={loading || !tokenA}
+              />
+              {tokenA && (
+                <div className="text-xs text-muted mt-2">
+                  余额:{" "}
+                  {parseFloat(tokenBalances[tokenA.address] || "0").toFixed(4)}{" "}
+                  {tokenA.symbol}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-primary mb-3">
+                {tokenB?.symbol || "代币B"} 数量
+              </label>
+              <input
+                type="number"
+                value={amountB}
+                onChange={(e) => setAmountB(e.target.value)}
+                placeholder="0.0"
+                className="dapp-input"
+                disabled={loading || !tokenB}
+              />
+              {tokenB && (
+                <div className="text-xs text-muted mt-2">
+                  余额:{" "}
+                  {parseFloat(tokenBalances[tokenB.address] || "0").toFixed(4)}{" "}
+                  {tokenB.symbol}
+                </div>
+              )}
             </div>
           </div>
 
@@ -635,172 +604,93 @@ const LiquidityInterface: React.FC = () => {
             onClick={handleAddLiquidity}
             disabled={
               loading ||
+              !tokenA ||
+              !tokenB ||
               !amountA ||
               !amountB ||
-              parseFloat(amountA) <= 0 ||
-              parseFloat(amountB) <= 0
+              tokenA.address === tokenB.address
             }
-            className={`w-full gradient-button success-button transition-all duration-300 py-4 ${
-              loading ? "opacity-50 cursor-not-allowed" : "hover:shadow-xl"
-            }`}
+            className="btn-success w-full"
           >
-            {loading ? (
-              <div className="flex items-center justify-center">
-                <div className="loading-spinner"></div>
-                添加中...
-              </div>
-            ) : (
-              <div className="flex items-center justify-center text-lg font-semibold">
-                <span className="mr-2">💧</span>
-                添加流动性
-              </div>
-            )}
+            {loading && <div className="loading-spinner"></div>}
+            {loading ? "添加中..." : "添加流动性"}
           </button>
+        </div>
+      ) : (
+        // 移除流动性界面
+        <div className="space-y-6">
+          <div>
+            <label className="block text-sm font-semibold text-primary mb-4">
+              移除比例
+            </label>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                {["25", "50", "75", "100"].map((value) => (
+                  <button
+                    key={value}
+                    onClick={() => setRemovePercentage(value)}
+                    className={`px-6 py-2 text-sm rounded-lg transition-all font-medium ${
+                      removePercentage === value
+                        ? "bg-gradient-to-r from-red-500 to-rose-500 text-white shadow-lg"
+                        : "bg-white/10 text-muted hover:text-secondary hover:bg-white/15 border border-white/20"
+                    }`}
+                    disabled={loading}
+                  >
+                    {value}%
+                  </button>
+                ))}
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="100"
+                value={removePercentage}
+                onChange={(e) => setRemovePercentage(e.target.value)}
+                className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                style={{
+                  background: `linear-gradient(to right, var(--brand-primary) 0%, var(--brand-primary) ${removePercentage}%, rgba(255,255,255,0.2) ${removePercentage}%, rgba(255,255,255,0.2) 100%)`,
+                }}
+              />
+              <div className="text-center">
+                <span className="text-lg font-semibold text-primary">
+                  移除 {removePercentage}% 的流动性
+                </span>
+              </div>
+            </div>
+          </div>
 
-          {/* 取消按钮 - 仅在loading时显示 */}
-          {loading && (
-            <button
-              onClick={() => {
-                setLoading(false);
-                showInfo("操作已取消", "如果交易已提交到网络，它可能仍会执行");
-              }}
-              className="w-full mt-3 bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300"
-            >
-              取消操作
-            </button>
-          )}
+          <button
+            onClick={handleRemoveLiquidity}
+            disabled={
+              loading ||
+              !tokenA ||
+              !tokenB ||
+              tokenA.address === tokenB.address ||
+              parseFloat(lpTokenBalance) === 0
+            }
+            className="btn-error w-full"
+          >
+            {loading && <div className="loading-spinner"></div>}
+            {loading ? "移除中..." : "移除流动性"}
+          </button>
         </div>
       )}
 
-      {activeTab === "remove" && (
-        <div>
-          <div className="mb-6 glass-card p-4">
-            <div className="text-sm text-slate-300 mb-4 flex items-center">
-              <span className="mr-2">🪙</span>
-              LP 代币余额:{" "}
-              <span className="text-slate-100 font-semibold ml-1">
-                {parseFloat(lpBalance).toFixed(6)}
-              </span>
-            </div>
-
-            {parseFloat(lpBalance) > 0 ? (
-              <>
-                {/* 移除百分比选择 */}
-                <div className="mb-6 glass-card p-4">
-                  <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-                    <span className="mr-2">📊</span>
-                    移除比例: {removePercentage}%
-                  </label>
-                  <div className="flex space-x-2 mb-4">
-                    {[25, 50, 75, 100].map((percentage) => (
-                      <button
-                        key={percentage}
-                        onClick={() => setRemovePercentage(percentage)}
-                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                          removePercentage === percentage
-                            ? "bg-gradient-to-r from-red-500 to-pink-500 text-white shadow-lg"
-                            : "bg-white/15 text-slate-300 hover:bg-white/25 hover:text-slate-100"
-                        }`}
-                      >
-                        {percentage}%
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="100"
-                    value={removePercentage}
-                    onChange={(e) =>
-                      setRemovePercentage(parseInt(e.target.value))
-                    }
-                    className="w-full h-2 bg-white/20 rounded-lg appearance-none cursor-pointer slider"
-                    style={{
-                      background: `linear-gradient(to right, #f56565 0%, #f56565 ${removePercentage}%, rgba(255,255,255,0.2) ${removePercentage}%, rgba(255,255,255,0.2) 100%)`,
-                    }}
-                  />
-                </div>
-
-                {/* 预计获得 */}
-                <div className="mb-6 glass-card p-4">
-                  <div className="text-sm font-medium text-slate-100 mb-3 flex items-center">
-                    <span className="mr-2">🎁</span>
-                    预计获得:
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-300 flex items-center">
-                        <span className="mr-2">🔷</span>
-                        {getDisplayName("A")}:
-                      </span>
-                      <span className="text-blue-300 font-semibold">
-                        {parseFloat(removeAmountA).toFixed(6)}{" "}
-                        {getDisplayName("A")}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-slate-300 flex items-center">
-                        <span className="mr-2">🔶</span>
-                        {getDisplayName("B")}:
-                      </span>
-                      <span className="text-orange-300 font-semibold">
-                        {parseFloat(removeAmountB).toFixed(6)}{" "}
-                        {getDisplayName("B")}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleRemoveLiquidity}
-                  disabled={loading}
-                  className={`w-full gradient-button warning-button transition-all duration-300 py-4 ${
-                    loading
-                      ? "opacity-50 cursor-not-allowed"
-                      : "hover:shadow-xl"
-                  }`}
-                >
-                  {loading ? (
-                    <div className="flex items-center justify-center">
-                      <div className="loading-spinner"></div>
-                      移除中...
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center text-lg font-semibold">
-                      <span className="mr-2">🔥</span>
-                      移除流动性
-                    </div>
-                  )}
-                </button>
-
-                {/* 取消按钮 - 仅在loading时显示 */}
-                {loading && (
-                  <button
-                    onClick={() => {
-                      setLoading(false);
-                      showInfo(
-                        "操作已取消",
-                        "如果交易已提交到网络，它可能仍会执行"
-                      );
-                    }}
-                    className="w-full mt-3 bg-gray-500 hover:bg-gray-600 text-white font-medium py-3 px-4 rounded-xl transition-all duration-300"
-                  >
-                    取消操作
-                  </button>
-                )}
-              </>
-            ) : (
-              <div className="text-center py-12">
-                <div className="text-6xl mb-4">💧</div>
-                <p className="text-slate-300 text-lg">您还没有 LP 代币</p>
-                <p className="text-slate-400 text-sm mt-2">
-                  先添加流动性来获得 LP 代币
-                </p>
-              </div>
-            )}
+      {/* 提示信息 */}
+      <div className="info-card">
+        <div className="flex items-start gap-3">
+          <span className="text-lg">💡</span>
+          <div className="text-sm">
+            <p className="font-medium mb-1">流动性说明：</p>
+            <ul className="space-y-1 text-xs opacity-90">
+              <li>• 添加流动性将获得LP代币，代表您在池中的份额</li>
+              <li>• 移除流动性会销毁LP代币并返还对应的代币对</li>
+              <li>• 首次添加流动性需要授权两个代币给路由器合约</li>
+              <li>• 流动性提供者可以赚取交易对的手续费收入</li>
+            </ul>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

@@ -1,345 +1,438 @@
 import React, { useState, useEffect } from "react";
+import { ethers } from "ethers";
 import { useWeb3 } from "../contexts/Web3Context";
 import { useNotification } from "../contexts/NotificationContext";
-import { ethers } from "ethers";
-import addresses from "../contracts/addresses.json";
+import { TokenInfo } from "../utils/tokenStorage";
 
-const SwapInterface: React.FC = () => {
-  const {
-    account,
-    tokenAContract,
-    tokenBContract,
-    routerContract,
-    isConnected,
-    tokenABalance,
-    tokenBBalance,
-    refreshTokenBalances,
-  } = useWeb3();
-  const { showSuccess, showError, showInfo } = useNotification();
-  const [fromAmount, setFromAmount] = useState<string>("");
-  const [toAmount, setToAmount] = useState<string>("");
-  const [fromToken, setFromToken] = useState<"TokenA" | "TokenB">("TokenA");
-  const [slippage, setSlippage] = useState<number>(1);
+interface SwapInterfaceProps {
+  importedTokens: TokenInfo[];
+  onBalanceUpdate?: () => void;
+}
+
+const SwapInterface: React.FC<SwapInterfaceProps> = ({
+  importedTokens,
+  onBalanceUpdate,
+}) => {
+  const { signer, routerContract, isConnected, tokenBalances } = useWeb3();
+  const { addNotification } = useNotification();
+
+  const [fromToken, setFromToken] = useState<TokenInfo | null>(null);
+  const [toToken, setToToken] = useState<TokenInfo | null>(null);
+  const [fromAmount, setFromAmount] = useState("");
+  const [toAmount, setToAmount] = useState("");
   const [loading, setLoading] = useState(false);
+  const [calculating, setCalculating] = useState(false);
+  const [slippage, setSlippage] = useState("0.5");
 
-  // 代币显示名称转换函数
-  const getDisplayName = (tokenName: "TokenA" | "TokenB") => {
-    return tokenName === "TokenA" ? "USDT" : "ETH";
+  const ERC20_ABI = [
+    "function approve(address spender, uint256 amount) returns (bool)",
+    "function allowance(address owner, address spender) view returns (uint256)",
+    "function balanceOf(address owner) view returns (uint256)",
+    "function decimals() view returns (uint8)",
+  ];
+
+  // 计算输出金额
+  const calculateOutputAmount = async (inputAmount: string) => {
+    if (
+      !routerContract ||
+      !fromToken ||
+      !toToken ||
+      !inputAmount ||
+      inputAmount === "0"
+    ) {
+      setToAmount("");
+      return;
+    }
+
+    try {
+      setCalculating(true);
+      const amountIn = ethers.parseUnits(inputAmount, fromToken.decimals);
+      const path = [fromToken.address, toToken.address];
+
+      const amounts = await routerContract.getAmountsOut(amountIn, path);
+      const amountOut = ethers.formatUnits(amounts[1], toToken.decimals);
+      setToAmount(amountOut);
+    } catch (error) {
+      console.error("计算输出金额失败:", error);
+      setToAmount("");
+      addNotification({
+        type: "error",
+        title: "计算失败",
+        message: "计算价格失败，可能是没有流动性",
+      });
+    } finally {
+      setCalculating(false);
+    }
   };
 
-  const fromContract = fromToken === "TokenA" ? tokenAContract : tokenBContract;
-  const fromAddress =
-    fromToken === "TokenA" ? addresses.tokenA : addresses.tokenB;
-  const toAddress =
-    fromToken === "TokenA" ? addresses.tokenB : addresses.tokenA;
+  // 检查并批准代币
+  const checkAndApproveToken = async (token: TokenInfo, amount: string) => {
+    if (!signer) return false;
 
-  // 余额已经由 Web3Context 统一管理，无需单独刷新
+    try {
+      const tokenContract = new ethers.Contract(
+        token.address,
+        ERC20_ABI,
+        signer
+      );
+      const amountToApprove = ethers.parseUnits(amount, token.decimals);
+      const signerAddress = await signer.getAddress();
+      const routerAddress = await routerContract?.getAddress();
 
-  useEffect(() => {
-    const calculateOutput = async () => {
-      if (!fromAmount || !routerContract || parseFloat(fromAmount) <= 0) {
-        setToAmount("");
-        return;
+      // 检查当前授权额度
+      const currentAllowance = await tokenContract.allowance(
+        signerAddress,
+        routerAddress
+      );
+
+      if (currentAllowance < amountToApprove) {
+        addNotification({
+          type: "info",
+          title: "授权确认",
+          message: "需要授权代币，请确认交易",
+        });
+        const approveTx = await tokenContract.approve(
+          routerAddress,
+          amountToApprove
+        );
+        await approveTx.wait();
+        addNotification({
+          type: "success",
+          title: "授权成功",
+          message: "代币授权成功",
+        });
       }
 
-      try {
-        const amountIn = ethers.parseEther(fromAmount);
-        const path = [fromAddress, toAddress];
-        const amounts = await routerContract.getAmountsOut(amountIn, path);
-        const amountOut = ethers.formatEther(amounts[1]);
-        setToAmount(amountOut);
-      } catch (error) {
-        console.error("计算输出失败:", error);
-        setToAmount("0");
-      }
-    };
+      return true;
+    } catch (error) {
+      console.error("授权失败:", error);
+      addNotification({
+        type: "error",
+        title: "授权失败",
+        message: "代币授权失败",
+      });
+      return false;
+    }
+  };
 
-    const timeoutId = setTimeout(calculateOutput, 500);
-    return () => clearTimeout(timeoutId);
-  }, [fromAmount, routerContract, fromAddress, toAddress]);
-
+  // 执行交换
   const handleSwap = async () => {
     if (
-      !fromContract ||
       !routerContract ||
-      !account ||
+      !signer ||
+      !fromToken ||
+      !toToken ||
       !fromAmount ||
       !toAmount
     ) {
-      showError("参数错误", "请确保所有必要的参数都已提供");
+      addNotification({
+        type: "error",
+        title: "信息不完整",
+        message: "请填写完整的交换信息",
+      });
       return;
     }
 
     setLoading(true);
+
     try {
-      const amountIn = ethers.parseEther(fromAmount);
-      const amountOutMin = ethers.parseEther(
-        ((parseFloat(toAmount) * (100 - slippage)) / 100).toString()
+      // 1. 检查并授权代币
+      const approved = await checkAndApproveToken(fromToken, fromAmount);
+      if (!approved) {
+        setLoading(false);
+        return;
+      }
+
+      // 2. 计算最小输出金额（考虑滑点）
+      const slippageDecimal = parseFloat(slippage) / 100;
+      const minAmountOut = ethers.parseUnits(
+        (parseFloat(toAmount) * (1 - slippageDecimal)).toFixed(
+          toToken.decimals
+        ),
+        toToken.decimals
       );
-      const path = [fromAddress, toAddress];
-      const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟
 
-      // 前置检查
-      showInfo("正在执行前置检查 🔍", "检查余额和流动性...");
+      // 3. 准备交换参数
+      const amountIn = ethers.parseUnits(fromAmount, fromToken.decimals);
+      const path = [fromToken.address, toToken.address];
+      const to = await signer.getAddress();
+      const deadline = Math.floor(Date.now() / 1000) + 60 * 20; // 20分钟后过期
 
-      // 检查用户余额
-      const userBalance = await fromContract.balanceOf(account);
-      if (userBalance < amountIn) {
-        throw new Error(
-          `余额不足，当前余额: ${ethers.formatEther(
-            userBalance
-          )} ${getDisplayName(fromToken)}`
-        );
-      }
+      addNotification({
+        type: "info",
+        title: "交换中",
+        message: "正在执行代币交换...",
+      });
 
-      // 检查流动性
-      showInfo("正在检查流动性 🔍", "检查流动性...");
-      try {
-        const expectedAmounts = await routerContract.getAmountsOut(
-          amountIn,
-          path
-        );
-        const expectedOutput = ethers.formatEther(expectedAmounts[1]);
-
-        // 检查期望输出是否与计算的输出接近（允许1%误差）
-        const outputDiff =
-          Math.abs(parseFloat(expectedOutput) - parseFloat(toAmount)) /
-          parseFloat(toAmount);
-        if (outputDiff > 0.01) {
-          showInfo("价格发生变化 📈", "重新计算最新价格...");
-          setToAmount(expectedOutput);
-          throw new Error("价格已发生变化，请确认新的输出数量后重试");
-        }
-      } catch (liquidityError: any) {
-        if (liquidityError.message.includes("价格已发生变化")) {
-          throw liquidityError;
-        }
-        throw new Error("流动性不足或交易对不存在");
-      }
-
-      // 检查授权
-      showInfo("正在检查授权 🔍", "检查代币授权状态...");
-      const allowance = await fromContract.allowance(account, addresses.router);
-      if (allowance < amountIn) {
-        showInfo(
-          "正在授权代币 📝",
-          `请在钱包中确认 ${getDisplayName(fromToken)} 授权交易...`
-        );
-        const approveTx = await fromContract.approve(
-          addresses.router,
-          ethers.MaxUint256
-        );
-        showInfo("等待授权确认 ⏳", "授权交易已提交，等待确认...");
-        await approveTx.wait();
-        showSuccess("授权成功 ✅", "代币授权已完成，现在可以进行交换");
-      }
-
-      // 执行交换
-      showInfo("正在执行交换 ⚡", "请在钱包中确认交换交易...");
+      // 4. 执行交换
       const swapTx = await routerContract.swapExactTokensForTokens(
         amountIn,
-        amountOutMin,
+        minAmountOut,
         path,
-        account,
+        to,
         deadline
       );
 
-      showInfo("等待交易确认 ⏳", "交换交易已提交，等待确认...");
-      const receipt = await swapTx.wait();
-      console.log("交换成功! 交易哈希:", receipt?.hash);
+      await swapTx.wait();
+      addNotification({
+        type: "success",
+        title: "交换成功",
+        message: "代币交换成功！",
+      });
 
-      // 重置表单
+      // 5. 重置表单
       setFromAmount("");
       setToAmount("");
 
-      // 延迟一下再刷新余额，确保状态更新
-      setTimeout(async () => {
-        await refreshTokenBalances();
-      }, 1000);
-
-      showSuccess(
-        "交换成功! 🎉",
-        `成功交换 ${fromAmount} ${getDisplayName(fromToken)} → ${parseFloat(
-          toAmount
-        ).toFixed(4)} ${getDisplayName(
-          fromToken === "TokenA" ? "TokenB" : "TokenA"
-        )}`
-      );
-    } catch (error: any) {
-      console.error("交换失败:", error);
-
-      // 更详细的错误处理
-      let errorMessage = "未知错误，请重试";
-      if (error.code === 4001) {
-        errorMessage = "用户取消了交易";
-      } else if (error.message.includes("INSUFFICIENT_OUTPUT_AMOUNT")) {
-        errorMessage = `滑点过大，实际输出低于最小期望。建议增加滑点容忍度到 ${
-          slippage + 1
-        }% 或更高`;
-      } else if (error.message.includes("INSUFFICIENT_LIQUIDITY")) {
-        errorMessage = "流动性不足，请尝试减少交换数量";
-      } else if (error.message.includes("TRANSFER_FROM_FAILED")) {
-        errorMessage = "代币转账失败，请检查代币授权";
-      } else if (error.message.includes("余额不足")) {
-        errorMessage = error.message;
-      } else if (error.message.includes("价格已发生变化")) {
-        errorMessage = error.message;
-      } else if (error.message.includes("流动性不足或交易对不存在")) {
-        errorMessage = error.message;
-      } else if (error.message) {
-        errorMessage = error.message;
+      if (onBalanceUpdate) {
+        onBalanceUpdate();
       }
-
-      showError("交换失败 😞", `操作失败: ${errorMessage}`);
+    } catch (error) {
+      console.error("交换失败:", error);
+      addNotification({
+        type: "error",
+        title: "交换失败",
+        message: "代币交换失败",
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSwitchTokens = () => {
-    setFromToken(fromToken === "TokenA" ? "TokenB" : "TokenA");
-    setFromAmount(toAmount);
-    setToAmount(fromAmount);
+  // 交换 from 和 to 代币
+  const handleReverseTokens = () => {
+    const tempToken = fromToken;
+    setFromToken(toToken);
+    setToToken(tempToken);
+    setFromAmount("");
+    setToAmount("");
   };
 
-  const handleMaxClick = () => {
-    const balance = fromToken === "TokenA" ? tokenABalance : tokenBBalance;
-    setFromAmount(balance);
-  };
+  // 当输入金额变化时计算输出
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (fromAmount && parseFloat(fromAmount) > 0) {
+        calculateOutputAmount(fromAmount);
+      } else {
+        setToAmount("");
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromAmount, fromToken, toToken]);
 
   if (!isConnected) {
     return (
-      <div className="glass-card p-6 card-animation">
-        <div className="flex items-center mb-6">
-          <div className="w-10 h-10 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center mr-3">
-            <span className="text-white font-bold">🔄</span>
-          </div>
-          <h2 className="text-xl font-bold text-slate-100">代币交换</h2>
+      <div className="text-center py-12">
+        <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-r from-purple-500/20 to-pink-500/20 flex items-center justify-center">
+          <span className="text-3xl">🔗</span>
         </div>
-        <div className="text-center py-12">
-          <div className="text-6xl mb-4">🔐</div>
-          <p className="text-slate-300 text-lg">请先连接钱包以开始交换</p>
+        <h3 className="text-lg font-semibold text-primary mb-2">
+          连接钱包开始
+        </h3>
+        <p className="text-secondary text-sm">请先连接您的钱包以进行代币交换</p>
+      </div>
+    );
+  }
+
+  if (importedTokens.length < 2) {
+    return (
+      <div className="text-center py-12">
+        <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-gradient-to-r from-orange-500/20 to-yellow-500/20 flex items-center justify-center">
+          <span className="text-3xl">📝</span>
+        </div>
+        <h3 className="text-lg font-semibold text-primary mb-2">
+          需要更多代币
+        </h3>
+        <p className="text-secondary text-sm mb-4">
+          至少需要导入 2 个代币才能进行交换
+        </p>
+        <div className="info-card inline-block">
+          <p className="text-sm">💡 请先在"导入代币"页面添加需要交换的代币</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="glass-card p-6 card-animation">
-      <div className="flex items-center mb-6">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-r from-green-400 to-blue-500 flex items-center justify-center mr-3">
-          <span className="text-white font-bold">🔄</span>
-        </div>
-        <h2 className="text-xl font-bold text-slate-100">代币交换</h2>
+    <div className="space-y-6">
+      <div className="text-center mb-6">
+        <h2 className="text-2xl font-bold text-primary mb-2 flex items-center justify-center gap-2">
+          <span>🔄</span> 代币交换
+        </h2>
+        <p className="text-secondary text-sm">
+          基于 UniswapV2 AMM 算法的去中心化交换
+        </p>
       </div>
 
       {/* 滑点设置 */}
-      <div className="mb-6 glass-card p-4">
-        <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-          <span className="mr-2">⚙️</span>
-          滑点容忍度: {slippage}%
-        </label>
-        <div className="flex space-x-2">
-          {[0.5, 1, 3, 5, 10].map((value) => (
-            <button
-              key={value}
-              onClick={() => setSlippage(value)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                slippage === value
-                  ? "bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg"
-                  : "bg-white/15 text-slate-300 hover:bg-white/25 hover:text-slate-100"
-              }`}
-            >
-              {value}%
-            </button>
-          ))}
+      <div className="bg-white/5 rounded-xl p-4 border border-white/10">
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-semibold text-primary">滑点容忍度</span>
+          <div className="flex items-center space-x-2">
+            {["0.1", "0.5", "1.0"].map((value) => (
+              <button
+                key={value}
+                onClick={() => setSlippage(value)}
+                className={`px-3 py-1 text-xs rounded-lg transition-all ${
+                  slippage === value
+                    ? "bg-blue-500/30 text-blue-300 border border-blue-500/50"
+                    : "bg-white/10 text-muted hover:text-secondary hover:bg-white/15"
+                }`}
+              >
+                {value}%
+              </button>
+            ))}
+            <input
+              type="number"
+              value={slippage}
+              onChange={(e) => setSlippage(e.target.value)}
+              className="w-16 px-2 py-1 text-xs bg-white/10 border border-white/20 text-primary rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500"
+              placeholder="自定义"
+              step="0.1"
+              min="0.1"
+              max="50"
+            />
+            <span className="text-xs text-muted">%</span>
+          </div>
         </div>
       </div>
 
-      {/* 输入代币 */}
-      <div className="mb-4 glass-card p-4">
-        <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-          <span className="mr-2">{fromToken === "TokenA" ? "🔷" : "🔶"}</span>从
-          ({getDisplayName(fromToken)})
-        </label>
-        <div className="relative">
-          <input
-            type="number"
-            value={fromAmount}
-            onChange={(e) => setFromAmount(e.target.value)}
-            placeholder="0.0"
-            className="custom-input w-full pr-16"
-          />
+      {/* 交换界面 */}
+      <div className="space-y-4">
+        {/* From Token */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10 hover:border-white/20 transition-all">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-semibold text-primary">从</span>
+            <span className="text-xs text-muted">
+              余额:{" "}
+              {fromToken
+                ? parseFloat(tokenBalances[fromToken.address] || "0").toFixed(4)
+                : "0.0000"}
+            </span>
+          </div>
+          <div className="flex items-center space-x-3">
+            <input
+              type="number"
+              value={fromAmount}
+              onChange={(e) => setFromAmount(e.target.value)}
+              placeholder="0.0"
+              className="flex-1 bg-transparent text-2xl font-medium text-primary placeholder-muted focus:outline-none"
+              disabled={loading}
+            />
+            <select
+              value={fromToken?.address || ""}
+              onChange={(e) => {
+                const token = importedTokens.find(
+                  (t) => t.address === e.target.value
+                );
+                setFromToken(token || null);
+              }}
+              className="bg-white/10 border border-white/20 text-primary px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[120px]"
+              disabled={loading}
+            >
+              <option value="">选择代币</option>
+              {importedTokens.map((token) => (
+                <option key={token.address} value={token.address}>
+                  {token.symbol}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* 交换按钮 */}
+        <div className="flex justify-center">
           <button
-            onClick={handleMaxClick}
-            className="absolute right-3 top-1/2 transform -translate-y-1/2 bg-gradient-to-r from-purple-500 to-pink-500 text-white text-xs font-medium px-3 py-1 rounded-full hover:shadow-lg transition-all duration-200"
+            onClick={handleReverseTokens}
+            className="p-3 bg-white/10 hover:bg-white/20 rounded-full transition-all hover:scale-105"
+            disabled={loading}
           >
-            MAX
+            <svg
+              className="w-5 h-5 text-secondary"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"
+              />
+            </svg>
           </button>
         </div>
-        <div className="text-sm text-slate-300 mt-2 flex items-center">
-          <span className="mr-1">💰</span>
-          余额:{" "}
-          {parseFloat(
-            fromToken === "TokenA" ? tokenABalance : tokenBBalance
-          ).toFixed(4)}
-        </div>
-      </div>
 
-      {/* 切换按钮 */}
-      <div className="flex justify-center mb-4">
-        <button
-          onClick={handleSwitchTokens}
-          className="p-3 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-purple-500 hover:to-pink-500 rounded-full transition-all duration-300 shadow-lg hover:shadow-xl transform hover:scale-110"
-        >
-          <span className="text-white text-xl">🔄</span>
-        </button>
-      </div>
-
-      {/* 输出代币 */}
-      <div className="mb-6 glass-card p-4">
-        <label className="block text-sm font-medium text-slate-100 mb-3 flex items-center">
-          <span className="mr-2">{fromToken === "TokenA" ? "🔶" : "🔷"}</span>到
-          ({getDisplayName(fromToken === "TokenA" ? "TokenB" : "TokenA")})
-        </label>
-        <input
-          type="number"
-          value={toAmount}
-          readOnly
-          placeholder="0.0"
-          className="custom-input w-full opacity-80 cursor-not-allowed"
-        />
-        <div className="text-sm text-slate-300 mt-2 flex items-center">
-          <span className="mr-1">💰</span>
-          余额:{" "}
-          {parseFloat(
-            fromToken === "TokenA" ? tokenBBalance : tokenABalance
-          ).toFixed(4)}
+        {/* To Token */}
+        <div className="bg-white/5 rounded-xl p-5 border border-white/10 hover:border-white/20 transition-all">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-semibold text-primary">到</span>
+            <span className="text-xs text-muted">
+              余额:{" "}
+              {toToken
+                ? parseFloat(tokenBalances[toToken.address] || "0").toFixed(4)
+                : "0.0000"}
+            </span>
+          </div>
+          <div className="flex items-center space-x-3">
+            <input
+              type="text"
+              value={calculating ? "计算中..." : toAmount}
+              placeholder="0.0"
+              className="flex-1 bg-transparent text-2xl font-medium text-primary placeholder-muted focus:outline-none"
+              disabled
+            />
+            <select
+              value={toToken?.address || ""}
+              onChange={(e) => {
+                const token = importedTokens.find(
+                  (t) => t.address === e.target.value
+                );
+                setToToken(token || null);
+              }}
+              className="bg-white/10 border border-white/20 text-primary px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[120px]"
+              disabled={loading}
+            >
+              <option value="">选择代币</option>
+              {importedTokens.map((token) => (
+                <option key={token.address} value={token.address}>
+                  {token.symbol}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
       {/* 交换信息 */}
-      {fromAmount && toAmount && (
-        <div className="mb-6 glass-card p-4">
-          <h3 className="text-sm font-medium text-slate-100 mb-3 flex items-center">
-            <span className="mr-2">📊</span>
-            交换详情
-          </h3>
-          <div className="space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-slate-300">汇率:</span>
-              <span className="text-slate-100 font-semibold">
-                1 {getDisplayName(fromToken)} ={" "}
-                {(parseFloat(toAmount) / parseFloat(fromAmount)).toFixed(6)}{" "}
-                {getDisplayName(fromToken === "TokenA" ? "TokenB" : "TokenA")}
+      {fromToken && toToken && toAmount && (
+        <div className="info-card">
+          <div className="text-sm space-y-2">
+            <div className="flex justify-between">
+              <span className="text-accent font-medium">交换比例:</span>
+              <span className="font-mono">
+                1 {fromToken.symbol} ={" "}
+                {(parseFloat(toAmount) / parseFloat(fromAmount || "1")).toFixed(
+                  6
+                )}{" "}
+                {toToken.symbol}
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-300">最小获得:</span>
-              <span className="text-green-400 font-semibold">
-                {((parseFloat(toAmount) * (100 - slippage)) / 100).toFixed(6)}{" "}
-                {getDisplayName(fromToken === "TokenA" ? "TokenB" : "TokenA")}
+            <div className="flex justify-between">
+              <span className="text-accent font-medium">最小接收:</span>
+              <span className="font-mono">
+                {(
+                  parseFloat(toAmount) *
+                  (1 - parseFloat(slippage) / 100)
+                ).toFixed(6)}{" "}
+                {toToken.symbol}
               </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-accent font-medium">滑点容忍:</span>
+              <span className="font-mono">{slippage}%</span>
             </div>
           </div>
         </div>
@@ -349,24 +442,34 @@ const SwapInterface: React.FC = () => {
       <button
         onClick={handleSwap}
         disabled={
-          loading || !fromAmount || !toAmount || parseFloat(fromAmount) <= 0
+          loading ||
+          !fromToken ||
+          !toToken ||
+          !fromAmount ||
+          !toAmount ||
+          fromToken.address === toToken.address ||
+          calculating
         }
-        className={`w-full gradient-button transition-all duration-300 py-4 ${
-          loading ? "opacity-50 cursor-not-allowed" : "hover:shadow-xl"
-        }`}
+        className="btn-primary w-full"
       >
-        {loading ? (
-          <div className="flex items-center justify-center">
-            <div className="loading-spinner"></div>
-            交换中...
-          </div>
-        ) : (
-          <div className="flex items-center justify-center text-lg font-semibold">
-            <span className="mr-2">⚡</span>
-            立即交换
-          </div>
-        )}
+        {loading && <div className="loading-spinner"></div>}
+        {loading ? "交换中..." : calculating ? "计算中..." : "交换代币"}
       </button>
+
+      {/* 提示信息 */}
+      <div className="info-card">
+        <div className="flex items-start gap-3">
+          <span className="text-lg">💡</span>
+          <div className="text-sm">
+            <p className="font-medium mb-1">交换说明：</p>
+            <ul className="space-y-1 text-xs opacity-90">
+              <li>• 交换前需要足够的代币余额和流动性</li>
+              <li>• 首次交换需要授权代币给路由器合约</li>
+              <li>• 滑点保护机制避免价格波动损失</li>
+            </ul>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

@@ -3,48 +3,51 @@ import React, {
   useContext,
   useState,
   useEffect,
-  useCallback,
   ReactNode,
+  useCallback,
 } from "react";
 import { ethers } from "ethers";
 import addresses from "../contracts/addresses.json";
 
-// 合约 ABI（简化版本，实际使用时需要完整的 ABI）
+declare global {
+  interface Window {
+    ethereum?: {
+      request: (args: { method: string; params?: any[] }) => Promise<any>;
+      on: (event: string, callback: (...args: any[]) => void) => void;
+      removeAllListeners: (event: string) => void;
+    };
+  }
+}
+
 const ERC20_ABI = [
   "function name() view returns (string)",
   "function symbol() view returns (string)",
   "function decimals() view returns (uint8)",
   "function totalSupply() view returns (uint256)",
   "function balanceOf(address) view returns (uint256)",
-  "function transfer(address to, uint256 amount) returns (bool)",
-  "function transferFrom(address from, address to, uint256 amount) returns (bool)",
-  "function approve(address spender, uint256 amount) returns (bool)",
   "function allowance(address owner, address spender) view returns (uint256)",
-  "function faucet()",
+  "function transfer(address to, uint256 amount) returns (bool)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+  "function transferFrom(address from, address to, uint256 amount) returns (bool)",
+  "function faucet() external",
+  "function mint(address to, uint256 amount) external",
+  "function owner() view returns (address)",
+  "function airdropSingle(address recipient, uint256 amount) external",
 ];
 
 const FACTORY_ABI = [
   "function getPair(address tokenA, address tokenB) view returns (address)",
   "function createPair(address tokenA, address tokenB) returns (address)",
-  "function allPairsLength() view returns (uint256)",
+  "function feeTo() view returns (address)",
+  "function feeToSetter() view returns (address)",
 ];
 
 const ROUTER_ABI = [
+  "function factory() view returns (address)",
+  "function getAmountsOut(uint amountIn, address[] calldata path) view returns (uint[] memory amounts)",
+  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) returns (uint[] memory amounts)",
   "function addLiquidity(address tokenA, address tokenB, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin, address to, uint deadline) returns (uint amountA, uint amountB, uint liquidity)",
   "function removeLiquidity(address tokenA, address tokenB, uint liquidity, uint amountAMin, uint amountBMin, address to, uint deadline) returns (uint amountA, uint amountB)",
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] path, address to, uint deadline) returns (uint[] amounts)",
-  "function getAmountsOut(uint amountIn, address[] path) view returns (uint[] amounts)",
-  "function getAmountsIn(uint amountOut, address[] path) view returns (uint[] amounts)",
-];
-
-// PAIR_ABI 在其他组件中会用到，保留备用
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const PAIR_ABI = [
-  "function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)",
-  "function token0() view returns (address)",
-  "function token1() view returns (address)",
-  "function totalSupply() view returns (uint256)",
-  "function balanceOf(address) view returns (uint256)",
 ];
 
 interface Web3ContextType {
@@ -55,16 +58,19 @@ interface Web3ContextType {
   isConnected: boolean;
   connectWallet: () => Promise<void>;
   disconnectWallet: () => void;
-  tokenAContract: ethers.Contract | null;
-  tokenBContract: ethers.Contract | null;
   factoryContract: ethers.Contract | null;
   routerContract: ethers.Contract | null;
   getBalance: (address: string) => Promise<string>;
   switchToAvalanche: () => Promise<void>;
-  // 新增：统一的代币余额管理
-  tokenABalance: string;
-  tokenBBalance: string;
-  refreshTokenBalances: () => Promise<void>;
+  // 新的代币管理方法
+  getTokenContract: (address: string) => ethers.Contract | null;
+  getTokenBalance: (
+    tokenAddress: string,
+    userAddress?: string
+  ) => Promise<string>;
+  refreshTokenBalance: (tokenAddress: string) => Promise<void>;
+  refreshAllTokenBalances: () => Promise<void>;
+  tokenBalances: { [address: string]: string };
 }
 
 const Web3Context = createContext<Web3ContextType | undefined>(undefined);
@@ -87,26 +93,26 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
   const [account, setAccount] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const [tokenAContract, setTokenAContract] = useState<ethers.Contract | null>(
-    null
-  );
-  const [tokenBContract, setTokenBContract] = useState<ethers.Contract | null>(
-    null
-  );
   const [factoryContract, setFactoryContract] =
     useState<ethers.Contract | null>(null);
   const [routerContract, setRouterContract] = useState<ethers.Contract | null>(
     null
   );
-  // 新增：统一的代币余额状态
-  const [tokenABalance, setTokenABalance] = useState<string>("0");
-  const [tokenBBalance, setTokenBBalance] = useState<string>("0");
+  const [tokenBalances, setTokenBalances] = useState<{
+    [address: string]: string;
+  }>({});
+  const [tokenContracts, setTokenContracts] = useState<{
+    [address: string]: ethers.Contract;
+  }>({});
 
   const connectWallet = async () => {
     try {
       if (typeof window.ethereum !== "undefined") {
+        const accounts = await window.ethereum.request({
+          method: "eth_requestAccounts",
+        });
+
         const provider = new ethers.BrowserProvider(window.ethereum);
-        const accounts = await provider.send("eth_requestAccounts", []);
         const signer = await provider.getSigner();
         const network = await provider.getNetwork();
 
@@ -116,17 +122,7 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
         setChainId(Number(network.chainId));
         setIsConnected(true);
 
-        // 初始化合约实例
-        if (addresses.tokenA) {
-          setTokenAContract(
-            new ethers.Contract(addresses.tokenA, ERC20_ABI, signer)
-          );
-        }
-        if (addresses.tokenB) {
-          setTokenBContract(
-            new ethers.Contract(addresses.tokenB, ERC20_ABI, signer)
-          );
-        }
+        // 初始化工厂和路由器合约
         if (addresses.factory) {
           setFactoryContract(
             new ethers.Contract(addresses.factory, FACTORY_ABI, signer)
@@ -137,6 +133,17 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
             new ethers.Contract(addresses.router, ROUTER_ABI, signer)
           );
         }
+
+        // 初始化所有代币合约
+        const contracts: { [address: string]: ethers.Contract } = {};
+        Object.values(addresses.tokens).forEach((tokenAddress) => {
+          contracts[tokenAddress] = new ethers.Contract(
+            tokenAddress,
+            ERC20_ABI,
+            signer
+          );
+        });
+        setTokenContracts(contracts);
 
         localStorage.setItem("walletConnected", "true");
       } else {
@@ -153,10 +160,10 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
     setAccount(null);
     setChainId(null);
     setIsConnected(false);
-    setTokenAContract(null);
-    setTokenBContract(null);
     setFactoryContract(null);
     setRouterContract(null);
+    setTokenContracts({});
+    setTokenBalances({});
     localStorage.removeItem("walletConnected");
   };
 
@@ -166,77 +173,112 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
       return "0";
     }
     try {
-      console.log("Getting balance for address:", address);
       const balance = await provider.getBalance(address);
-      console.log("Raw balance:", balance.toString());
-      const formattedBalance = ethers.formatEther(balance);
-      console.log("Formatted balance:", formattedBalance);
-      return formattedBalance;
+      return ethers.formatEther(balance);
     } catch (error) {
       console.error("获取余额失败:", error);
       return "0";
     }
   };
 
+  const getTokenContract = useCallback(
+    (address: string): ethers.Contract | null => {
+      if (!signer) return null;
+
+      if (tokenContracts[address]) {
+        return tokenContracts[address];
+      }
+
+      // 动态创建新的代币合约实例
+      const contract = new ethers.Contract(address, ERC20_ABI, signer);
+      setTokenContracts((prev) => ({ ...prev, [address]: contract }));
+      return contract;
+    },
+    [signer, tokenContracts]
+  );
+
+  const getTokenBalance = useCallback(
+    async (tokenAddress: string, userAddress?: string): Promise<string> => {
+      const targetAddress = userAddress || account;
+      if (!targetAddress || !signer) return "0";
+
+      try {
+        // 直接创建合约实例避免依赖循环
+        const contract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+        const balance = await contract.balanceOf(targetAddress);
+        const decimals = await contract.decimals();
+        const formattedBalance = ethers.formatUnits(balance, decimals);
+
+        // 更新余额缓存
+        setTokenBalances((prev) => ({
+          ...prev,
+          [tokenAddress]: formattedBalance,
+        }));
+
+        return formattedBalance;
+      } catch (error) {
+        console.error(`获取代币 ${tokenAddress} 余额失败:`, error);
+        return "0";
+      }
+    },
+    [account, signer]
+  );
+
+  const refreshTokenBalance = async (tokenAddress: string): Promise<void> => {
+    await getTokenBalance(tokenAddress);
+  };
+
   const switchToAvalanche = async () => {
     if (!window.ethereum) return;
+
+    // Avalanche L1 本地网络配置
+    const avalancheL1Config = {
+      chainId: "0x30000B1A", // 202505261834 转换为十六进制
+      chainName: "Avalanche L1 Local",
+      nativeCurrency: {
+        name: "AVX",
+        symbol: "AVX",
+        decimals: 18,
+      },
+      rpcUrls: [
+        "http://127.0.0.1:49370/ext/bc/oHSfmKP2fJ6YtMjuYkSPDAsB7rosB5LGDnthz82HuM1s1gYBM/rpc",
+      ],
+      blockExplorerUrls: [""], // 本地网络没有区块链浏览器
+    };
 
     try {
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0xA86A" }], // Avalanche Mainnet
+        params: [{ chainId: avalancheL1Config.chainId }],
       });
     } catch (switchError: any) {
       if (switchError.code === 4902) {
         try {
           await window.ethereum.request({
             method: "wallet_addEthereumChain",
-            params: [
-              {
-                chainId: "0xA86A",
-                chainName: "Avalanche Network",
-                nativeCurrency: {
-                  name: "AVAX",
-                  symbol: "AVAX",
-                  decimals: 18,
-                },
-                rpcUrls: ["https://api.avax.network/ext/bc/C/rpc"],
-                blockExplorerUrls: ["https://snowtrace.io/"],
-              },
-            ],
+            params: [avalancheL1Config],
           });
         } catch (addError) {
-          console.error("添加网络失败:", addError);
+          console.error("添加 Avalanche L1 网络失败:", addError);
         }
       }
     }
   };
 
-  // 新增：刷新代币余额的函数
-  const refreshTokenBalances = useCallback(async () => {
-    if (!account || !tokenAContract || !tokenBContract) {
-      setTokenABalance("0");
-      setTokenBBalance("0");
-      return;
-    }
+  // 自动刷新所有代币余额
+  const refreshAllTokenBalances = useCallback(async () => {
+    if (!account) return;
 
-    try {
-      const [balA, balB] = await Promise.all([
-        tokenAContract.balanceOf(account),
-        tokenBContract.balanceOf(account),
-      ]);
+    const promises = Object.values(addresses.tokens).map((tokenAddress) =>
+      getTokenBalance(tokenAddress)
+    );
 
-      setTokenABalance(ethers.formatEther(balA));
-      setTokenBBalance(ethers.formatEther(balB));
-    } catch (error) {
-      console.error("刷新代币余额失败:", error);
-    }
-  }, [account, tokenAContract, tokenBContract]);
+    await Promise.all(promises);
+  }, [account, getTokenBalance]);
 
-  // 自动刷新代币余额
   useEffect(() => {
-    refreshTokenBalances();
-  }, [account, tokenAContract, tokenBContract, refreshTokenBalances]);
+    refreshAllTokenBalances();
+  }, [account, refreshAllTokenBalances]);
 
   useEffect(() => {
     const checkConnection = async () => {
@@ -256,49 +298,12 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
         if (accounts.length === 0) {
           disconnectWallet();
         } else {
-          console.log("账户已切换到:", accounts[0]);
-          try {
-            // 重新获取provider和signer
-            const provider = new ethers.BrowserProvider(window.ethereum!);
-            const signer = await provider.getSigner();
-
-            // 更新状态
-            setProvider(provider);
-            setSigner(signer);
-            setAccount(accounts[0]);
-
-            // 重新初始化所有合约实例以使用新的signer
-            if (addresses.tokenA) {
-              setTokenAContract(
-                new ethers.Contract(addresses.tokenA, ERC20_ABI, signer)
-              );
-            }
-            if (addresses.tokenB) {
-              setTokenBContract(
-                new ethers.Contract(addresses.tokenB, ERC20_ABI, signer)
-              );
-            }
-            if (addresses.factory) {
-              setFactoryContract(
-                new ethers.Contract(addresses.factory, FACTORY_ABI, signer)
-              );
-            }
-            if (addresses.router) {
-              setRouterContract(
-                new ethers.Contract(addresses.router, ROUTER_ABI, signer)
-              );
-            }
-
-            console.log("合约实例已使用新账户重新初始化");
-          } catch (error) {
-            console.error("切换账户时重新初始化失败:", error);
-          }
+          await connectWallet();
         }
       });
 
       window.ethereum.on("chainChanged", (chainId: string) => {
         setChainId(parseInt(chainId, 16));
-        // 网络切换时也应该重新连接
         window.location.reload();
       });
     }
@@ -319,15 +324,15 @@ export const Web3Provider: React.FC<Web3ProviderProps> = ({ children }) => {
     isConnected,
     connectWallet,
     disconnectWallet,
-    tokenAContract,
-    tokenBContract,
     factoryContract,
     routerContract,
     getBalance,
     switchToAvalanche,
-    tokenABalance,
-    tokenBBalance,
-    refreshTokenBalances,
+    getTokenContract,
+    getTokenBalance,
+    refreshTokenBalance,
+    refreshAllTokenBalances,
+    tokenBalances,
   };
 
   return <Web3Context.Provider value={value}>{children}</Web3Context.Provider>;

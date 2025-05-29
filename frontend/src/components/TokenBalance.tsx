@@ -1,126 +1,126 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useWeb3 } from "../contexts/Web3Context";
-import { useNotification } from "../contexts/NotificationContext";
+import { TokenInfo } from "../utils/tokenStorage";
 
 interface TokenBalanceProps {
-  tokenName: "TokenA" | "TokenB";
-  displayName: string;
-  symbolName: string;
+  tokens: TokenInfo[];
+  onRefresh?: () => void;
 }
 
-const TokenBalance: React.FC<TokenBalanceProps> = ({
-  tokenName,
-  displayName,
-  symbolName,
-}) => {
-  const {
-    tokenAContract,
-    tokenBContract,
-    isConnected,
-    tokenABalance,
-    tokenBBalance,
-    refreshTokenBalances,
-  } = useWeb3();
-  const { showSuccess, showError } = useNotification();
+const TokenBalance: React.FC<TokenBalanceProps> = ({ tokens, onRefresh }) => {
+  const { getTokenBalance, account, isConnected } = useWeb3();
+  const [balances, setBalances] = useState<{ [address: string]: string }>({});
   const [loading, setLoading] = useState(false);
 
-  const contract = tokenName === "TokenA" ? tokenAContract : tokenBContract;
-  const balance = tokenName === "TokenA" ? tokenABalance : tokenBBalance;
-
-  const handleFaucet = async () => {
-    if (!contract) return;
+  // 刷新所有代币余额
+  const refreshBalances = async () => {
+    if (!account || !isConnected || tokens.length === 0) return;
 
     setLoading(true);
     try {
-      const tx = await contract.faucet();
-      const receipt = await tx.wait();
-      console.log(`${tokenName} 水龙头成功! 交易哈希:`, receipt?.hash);
+      const newBalances: { [address: string]: string } = {};
 
-      // 延迟刷新余额
-      setTimeout(async () => {
-        await refreshTokenBalances();
-      }, 1000);
+      await Promise.all(
+        tokens.map(async (token) => {
+          try {
+            const balance = await getTokenBalance(token.address);
+            newBalances[token.address] = balance;
+          } catch (error) {
+            console.error(`获取 ${token.symbol} 余额失败:`, error);
+            newBalances[token.address] = "0";
+          }
+        })
+      );
 
-      showSuccess(
-        "水龙头成功! 🎉",
-        `成功获得 1000 ${displayName} 代币，已添加到您的钱包中`
-      );
-    } catch (error: any) {
-      console.error("水龙头失败:", error);
-      showError(
-        "水龙头失败 😞",
-        `获取代币失败: ${error.message || "未知错误"}`
-      );
+      setBalances(newBalances);
+      onRefresh?.();
+    } catch (error) {
+      console.error("刷新余额失败:", error);
     } finally {
       setLoading(false);
     }
   };
 
+  // 初始加载和定时刷新
+  useEffect(() => {
+    refreshBalances();
+
+    // 每30秒自动刷新一次
+    const interval = setInterval(refreshBalances, 30000);
+    return () => clearInterval(interval);
+  }, [tokens, account, isConnected]);
+
   if (!isConnected) {
-    return (
-      <div className="bg-gray-100 p-4 rounded-lg">
-        <div className="text-gray-500">请先连接钱包</div>
-      </div>
-    );
+    return null;
   }
 
   return (
-    <div className="glass-card p-4 card-animation hover:scale-105 transition-transform duration-300">
-      <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center space-x-2">
-          <div
-            className={`w-8 h-8 rounded-full flex items-center justify-center ${
-              tokenName === "TokenA"
-                ? "bg-gradient-to-r from-blue-500 to-purple-500"
-                : "bg-gradient-to-r from-pink-500 to-red-500"
-            }`}
-          >
-            <span className="text-white font-bold text-sm">
-              {tokenName === "TokenA" ? "🔷" : "🔶"}
-            </span>
-          </div>
-          <h3 className="text-lg font-semibold text-slate-100">
-            {displayName}
-          </h3>
-        </div>
-        <span className="text-sm text-slate-300 bg-white/15 px-2 py-1 rounded-full">
-          {symbolName}
-        </span>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-primary flex items-center">
+          <span className="status-indicator status-online"></span>
+          代币余额
+        </h3>
+        <button
+          onClick={refreshBalances}
+          disabled={loading}
+          className="text-xs text-accent hover:text-blue-300 transition-colors disabled:opacity-50 p-1 rounded hover:bg-white/10"
+          title="刷新余额"
+        >
+          {loading ? "🔄" : "↻"}
+        </button>
       </div>
 
-      <div className="mb-4">
-        <div className="text-sm text-slate-300 mb-1">余额</div>
-        <div className="text-2xl font-bold balance-text">
-          {loading ? (
-            <div className="flex items-center">
-              <div className="loading-spinner"></div>
-              加载中...
+      {tokens.length === 0 ? (
+        <div className="text-center py-4">
+          <div className="w-12 h-12 mx-auto mb-2 rounded-full bg-gradient-to-r from-gray-500/20 to-slate-500/20 flex items-center justify-center">
+            <span className="text-xl">📊</span>
+          </div>
+          <p className="text-muted text-sm">暂无代币余额</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {tokens.map((token) => (
+            <div
+              key={token.address}
+              className="bg-white/5 hover:bg-white/8 rounded-lg p-3 group transition-all duration-300 border border-transparent hover:border-white/10"
+            >
+              <div className="flex justify-between items-center">
+                <div className="flex items-center space-x-2">
+                  <span className="text-primary text-sm font-semibold">
+                    {token.symbol}
+                  </span>
+                  <span className="text-muted text-xs font-mono">
+                    {token.address.slice(0, 6)}...{token.address.slice(-4)}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <p className="text-primary font-mono text-sm font-medium">
+                    {loading ? (
+                      <span className="text-muted">...</span>
+                    ) : (
+                      parseFloat(balances[token.address] || "0").toFixed(4)
+                    )}
+                  </p>
+                </div>
+              </div>
             </div>
+          ))}
+        </div>
+      )}
+
+      <div className="info-card text-center">
+        <div className="text-xs">
+          {loading ? (
+            <span className="flex items-center justify-center gap-1">
+              <div className="loading-spinner w-3 h-3"></div>
+              更新中...
+            </span>
           ) : (
-            `${parseFloat(balance).toFixed(2)} ${displayName}`
+            "💾 每30秒自动更新余额"
           )}
         </div>
       </div>
-
-      <button
-        onClick={handleFaucet}
-        disabled={loading || !contract}
-        className={`w-full gradient-button success-button transition-all duration-300 ${
-          loading ? "opacity-50 cursor-not-allowed" : "hover:shadow-lg"
-        }`}
-      >
-        {loading ? (
-          <div className="flex items-center justify-center">
-            <div className="loading-spinner"></div>
-            处理中...
-          </div>
-        ) : (
-          <div className="flex items-center justify-center">
-            <span className="mr-2">💧</span>
-            获取测试代币
-          </div>
-        )}
-      </button>
     </div>
   );
 };
