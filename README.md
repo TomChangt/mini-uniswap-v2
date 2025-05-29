@@ -87,30 +87,40 @@ cd ..
 npx hardhat compile
 ```
 
-### 3. 启动本地区块链
+### 3. 部署 Avalanche L1 本地网络
+
+参照 [AVALANCHE_L1_NETWORK.md](AVALANCHE_L1_NETWORK.md) 文档，创建并部署 Avalanche L1 本地网络：
 
 ```bash
-# 启动 Hardhat 本地网络
-npx hardhat node
+# 创建 Avalanche L1 配置
+avalanche blockchain create avxL1
+
+# 部署到本地
+avalanche blockchain deploy avxL1 --local
 ```
 
 ### 4. 部署智能合约
 
 ```bash
-# 新开终端，部署合约到本地网络
-npx hardhat run scripts/deploy.js --network localhost
+# 部署合约到 Avalanche L1 本地网络
+npx hardhat run scripts/deploy.js --network avalanche
 ```
 
 ### 5. 配置 MetaMask
 
-添加本地网络到 MetaMask：
+添加 Avalanche L1 本地网络到 MetaMask：
 
-- **网络名称**：Hardhat Local
-- **RPC URL**：http://127.0.0.1:8545
-- **链 ID**：31337
-- **货币符号**：ETH
+- **网络名称**：Avalanche L1 Local
+- **RPC URL**：http://127.0.0.1:58621/ext/bc/oHSfmKP2fJ6YtMjuYkSPDAsB7rosB5LGDnthz82HuM1s1gYBM/rpc
+- **链 ID**：202505261834
+- **货币符号**：AVX
 
-导入测试账户私钥（从 Hardhat 输出中获取）
+导入测试账户私钥：
+
+- 使用 ewoq 测试账户：`0x56289e99c94b6912bfc12adc093c9b51124f0dc54ac7a766b2bc5ccf558d8027`
+- 或从 Avalanche-CLI 输出中获取其他测试账户私钥
+
+> 📖 详细的网络配置步骤请参考 [AVALANCHE_L1_NETWORK.md](AVALANCHE_L1_NETWORK.md) 文档
 
 ### 6. 启动前端应用
 
@@ -224,31 +234,6 @@ cd frontend
 # 运行前端测试
 npm test
 ```
-
-## 📝 部署到主网
-
-### 1. 配置网络
-
-编辑 `hardhat.config.ts` 添加主网配置：
-
-```typescript
-networks: {
-  mainnet: {
-    url: process.env.MAINNET_URL,
-    accounts: [process.env.PRIVATE_KEY]
-  }
-}
-```
-
-### 2. 部署合约
-
-```bash
-npx hardhat run scripts/deploy.js --network mainnet
-```
-
-### 3. 更新前端配置
-
-更新 `frontend/src/contracts/addresses.json` 中的合约地址
 
 ## 🤝 贡献指南
 
