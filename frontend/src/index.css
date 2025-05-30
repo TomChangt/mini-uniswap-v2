@@ -44,12 +44,14 @@
     0 4px 6px -2px rgba(0, 0, 0, 0.05);
   --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
     0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 
   /* 边框圆角 */
   --radius-sm: 6px;
   --radius-md: 12px;
   --radius-lg: 16px;
   --radius-xl: 20px;
+  --radius-2xl: 24px;
 }
 
 /* 重置和基础样式 */
@@ -456,96 +458,165 @@ body::before {
 .info-card {
   background: rgba(66, 153, 225, 0.1);
   border: 1px solid rgba(66, 153, 225, 0.3);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 16px;
-  color: var(--text-accent);
+  backdrop-filter: blur(10px);
 }
 
 .success-card {
   background: rgba(72, 187, 120, 0.1);
   border: 1px solid rgba(72, 187, 120, 0.3);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 16px;
-  color: var(--success-color);
+  backdrop-filter: blur(10px);
 }
 
 .warning-card {
   background: rgba(237, 137, 54, 0.1);
   border: 1px solid rgba(237, 137, 54, 0.3);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 16px;
-  color: var(--warning-color);
+  backdrop-filter: blur(10px);
 }
 
 .error-card {
   background: rgba(245, 101, 101, 0.1);
   border: 1px solid rgba(245, 101, 101, 0.3);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   padding: 16px;
-  color: var(--error-color);
+  backdrop-filter: blur(10px);
 }
 
 /* 加载动画 */
 .loading-spinner {
   width: 20px;
   height: 20px;
-  border: 2px solid rgba(255, 255, 255, 0.3);
-  border-top: 2px solid var(--brand-primary);
+  border: 2px solid transparent;
+  border-top: 2px solid currentColor;
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
 
 @keyframes spin {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
+  to {
     transform: rotate(360deg);
   }
 }
 
-/* 卡片动画 */
-.card-animation {
-  animation: slideUp 0.6s ease-out;
+/* 脉冲动画 */
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
-@keyframes slideUp {
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* 弹跳动画 */
+@keyframes bounce {
+  0%,
+  100% {
+    transform: translateY(-25%);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: none;
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}
+
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+
+/* 旋转动画 */
+@keyframes spin {
   from {
-    opacity: 0;
-    transform: translateY(20px);
+    transform: rotate(0deg);
   }
   to {
-    opacity: 1;
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* 滑入动画 */
+@keyframes slideInUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
     transform: translateY(0);
+    opacity: 1;
   }
 }
 
-/* 通知样式 */
-.notification {
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: var(--radius-md);
-  backdrop-filter: blur(20px);
-  box-shadow: var(--shadow-lg);
-  animation: slideInRight 0.3s ease-out;
+.animate-slide-in-up {
+  animation: slideInUp 0.3s ease-out;
 }
 
-@keyframes slideInRight {
+/* 淡入动画 */
+@keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateX(100%);
   }
   to {
     opacity: 1;
-    transform: translateX(0);
   }
 }
 
-/* 响应式调整 */
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* 缩放动画 */
+@keyframes scaleIn {
+  from {
+    transform: scale(0.9);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s ease-out;
+}
+
+/* 响应式断点 */
 @media (max-width: 768px) {
   .glass-card {
-    border-radius: var(--radius-md);
+    padding: 16px;
     margin: 12px;
+  }
+
+  .tab-container {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .tab-button {
+    flex: 1;
+    min-width: calc(50% - 4px);
+  }
+}
+
+@media (max-width: 480px) {
+  .glass-card {
+    padding: 12px;
+    margin: 8px;
   }
 
   .btn-primary,
@@ -553,24 +624,17 @@ body::before {
   .btn-success,
   .btn-error,
   .btn-warning {
-    padding: 14px 20px;
     font-size: 14px;
-    min-height: 48px;
-  }
-
-  .dapp-input,
-  .dapp-select {
-    padding: 14px 16px;
-    font-size: 14px;
+    padding: 12px 16px;
   }
 
   .tab-button {
-    padding: 12px 16px;
-    font-size: 13px;
+    font-size: 12px;
+    padding: 10px 12px;
   }
 }
 
-/* 滚动条样式 */
+/* 自定义滚动条 */
 ::-webkit-scrollbar {
   width: 8px;
 }
@@ -587,4 +651,121 @@ body::before {
 
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(74, 85, 104, 0.8);
+}
+
+/* 聚焦可见性 */
+.focus\:ring-2:focus {
+  box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.5);
+}
+
+.focus\:ring-blue-500:focus {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+}
+
+.focus\:ring-offset-2:focus {
+  box-shadow: 0 0 0 2px var(--primary-bg), 0 0 0 4px rgba(49, 130, 206, 0.5);
+}
+
+/* 过渡效果 */
+.transition-all {
+  transition: all 0.3s ease;
+}
+
+.transition-colors {
+  transition: color 0.3s ease, background-color 0.3s ease,
+    border-color 0.3s ease;
+}
+
+.transition-transform {
+  transition: transform 0.3s ease;
+}
+
+.duration-300 {
+  transition-duration: 300ms;
+}
+
+/* 变换效果 */
+.hover\:scale-\[1\.02\]:hover {
+  transform: scale(1.02);
+}
+
+.hover\:scale-110:hover {
+  transform: scale(1.1);
+}
+
+.active\:scale-\[0\.98\]:active {
+  transform: scale(0.98);
+}
+
+.hover\:rotate-180:hover {
+  transform: rotate(180deg);
+}
+
+/* 阴影效果 */
+.shadow-2xl {
+  box-shadow: var(--shadow-2xl);
+}
+
+.hover\:shadow-xl:hover {
+  box-shadow: var(--shadow-xl);
+}
+
+/* 渐变背景 */
+.bg-gradient-to-r {
+  background-image: linear-gradient(to right, var(--tw-gradient-stops));
+}
+
+.bg-gradient-to-br {
+  background-image: linear-gradient(to bottom right, var(--tw-gradient-stops));
+}
+
+.from-blue-500 {
+  --tw-gradient-from: #3b82f6;
+  --tw-gradient-stops: var(--tw-gradient-from),
+    var(--tw-gradient-to, rgba(59, 130, 246, 0));
+}
+
+.to-purple-600 {
+  --tw-gradient-to: #9333ea;
+}
+
+/* 可访问性改进 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 高对比度模式 */
+@media (prefers-contrast: high) {
+  .glass-card {
+    border-width: 2px;
+    border-color: rgba(255, 255, 255, 0.8);
+  }
+
+  .btn-primary {
+    border: 2px solid #000;
+  }
+}
+
+/* 深色模式优化 */
+@media (prefers-color-scheme: dark) {
+  /* 已经是深色主题，不需要额外调整 */
+}
+
+/* 打印样式 */
+@media print {
+  body::before {
+    display: none;
+  }
+
+  .glass-card {
+    background: white;
+    color: black;
+    border: 1px solid #ccc;
+  }
 }

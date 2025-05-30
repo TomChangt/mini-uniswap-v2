@@ -54,7 +54,7 @@ const WalletConnect: React.FC = () => {
         return "Avalanche Fuji Testnet";
       case 31337:
         return "Hardhat Local";
-      case 202505261834:
+      case 202505301220:
         return "Avalanche L1 Local";
       default:
         return "Unknown Network";
